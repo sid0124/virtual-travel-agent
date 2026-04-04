@@ -1,17 +1,40 @@
 "use client"
 
 import { useRouter } from "next/navigation"
-import { useEffect, useMemo, useState } from "react"
-import { Globe, Loader2, Search, SlidersHorizontal, X, Award, Briefcase, Plane } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { type DateRange } from "react-day-picker"
+import { format } from "date-fns"
+import { toast } from "sonner"
+import {
+  Award,
+  CalendarDays,
+  ChevronDown,
+  Loader2,
+  MapPin,
+  Plane,
+  Search,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react"
 
-import { Navigation } from "@/components/navigation"
-import { DestinationCard } from "@/components/destination-card"
 import { ChatBubble } from "@/components/chat-bubble"
+import { DestinationCard } from "@/components/destination-card"
+import { Navigation } from "@/components/navigation"
+import { useTripPlanning } from "@/components/trip-planning-provider"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
-import { Badge } from "@/components/ui/badge"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -19,198 +42,257 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Slider } from "@/components/ui/slider"
+import { destinationFallbackImage, destinations, ensureDestinationImage, interestTags } from "@/lib/data"
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet"
-
-import { destinations, interestTags } from "@/lib/data"
+  defaultTripSetupState,
+  type BudgetPreference,
+  estimateTravelDistance,
+  getTripDuration,
+  type SelectedDestination,
+  TRIP_SETUP_STORAGE_KEY,
+  type TravelStyle,
+} from "@/lib/trip-budget"
 import { cn } from "@/lib/utils"
+import { useIsMobile } from "@/hooks/use-mobile"
 
+const DESTINATION_IMAGE_CACHE_KEY = "destination-image-cache:v1"
 
-type ExpertiseLevel = "beginner" | "intermediate" | "expert"
-type SearchScope = "country" | "city" | "place"
+const countryAliases: Record<string, string[]> = {
+  usa: ["united states", "united states of america", "america", "us"],
+  "united states": ["usa", "united states of america", "america", "us"],
+  uae: ["united arab emirates", "emirates"],
+  "united arab emirates": ["uae", "emirates"],
+  uk: ["united kingdom", "great britain", "britain", "england"],
+  "united kingdom": ["uk", "great britain", "britain", "england"],
+}
 
-type ApiLocation = {
-  id: number
+function getCountrySearchTerms(country?: string) {
+  const normalizedCountry = (country || "").toLowerCase().trim()
+  return [normalizedCountry, ...(countryAliases[normalizedCountry] || [])].filter(Boolean)
+}
+
+function getSearchableText(dest: (typeof destinations)[number]) {
+  return [
+    dest.name,
+    dest.city,
+    dest.state || "",
+    dest.country,
+    ...getCountrySearchTerms(dest.country),
+    dest.category || "",
+    ...(dest.tags || []),
+    ...dest.interests,
+    dest.famousFor,
+    dest.type,
+    dest.description,
+  ].join(" ")
+}
+
+function matchesDestinationSearch(dest: (typeof destinations)[number], query: string) {
+  if (!query) return true
+
+  const normalizedTags = [...(dest.tags || []), ...dest.interests].map((tag) => tag.toLowerCase())
+  const state = dest.state?.toLowerCase() || ""
+  const city = dest.city?.toLowerCase() || ""
+  const countryTerms = getCountrySearchTerms(dest.country)
+  const category = dest.category?.toLowerCase() || ""
+  const type = dest.type?.toLowerCase() || ""
+  const name = dest.name?.toLowerCase() || ""
+
+  return (
+    name.includes(query) ||
+    city.includes(query) ||
+    state.includes(query) ||
+    countryTerms.some((term) => term.includes(query)) ||
+    category.includes(query) ||
+    type.includes(query) ||
+    normalizedTags.some((tag) => tag.includes(query))
+  )
+}
+
+function buildImageQuery(dest: (typeof destinations)[number]) {
+  return [dest.name, dest.city, dest.state || "", dest.country, dest.category || dest.type]
+    .filter(Boolean)
+    .join(", ")
+}
+
+type SelectedPlace = {
+  id: string
   name: string
-  country: string
-  countryCode: string
+  city?: string
   state?: string
-  lat: string
-  lon: string
-  population?: number
+  country?: string
+  region?: string
   image?: string
-  kind?: SearchScope
+  latitude?: number
+  longitude?: number
+  entryFee?: number
 }
 
-function normalizeText(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-}
-
-function locationRelevanceScore(loc: ApiLocation, query: string): number {
-  const q = normalizeText(query)
-  if (!q) return 0
-  const tokens = q.split(" ").filter(Boolean)
-  const target = normalizeText([loc.name, loc.state || "", loc.country].join(" "))
-  const name = normalizeText(loc.name)
-
-  let score = 0
-  if (name === q) score += 100
-  if (name.startsWith(q)) score += 45
-  if (name.includes(q)) score += 30
-  if (target.includes(q)) score += 20
-  for (const token of tokens) {
-    if (name.includes(token)) score += 8
-    else if (target.includes(token)) score += 4
+function dedupeSelectedPlaces(places: SelectedPlace[]) {
+  const map = new Map<string, SelectedPlace>()
+  for (const place of places) {
+    map.set(place.id, place)
   }
-
-  const pop = typeof loc.population === "number" ? loc.population : 0
-  score += Math.min(20, Math.log10(Math.max(1, pop)))
-  return score
+  return Array.from(map.values())
 }
-
-function placeMatchesQuery(place: { name?: string; formatted?: string }, query: string) {
-  const q = normalizeText(query)
-  if (!q) return true
-
-  const name = normalizeText(place?.name || "")
-  const formatted = normalizeText(place?.formatted || "")
-  const haystack = `${name} ${formatted}`.trim()
-
-  if (name.includes(q) || haystack.includes(q)) return true
-
-  const aliases: Record<string, string[]> = {
-    "golden temple": ["harmandir", "darbar sahib", "shri harmandir"],
-    "marine drive": ["netaji subhash chandra bose road", "queen s necklace"],
-    "red fort": ["lal qila", "red fort delhi", "laal qila", "qila e mubarak"],
-  }
-
-  const mapped = Object.entries(aliases).find(([key]) => q.includes(key))
-  if (mapped) {
-    const [, words] = mapped
-    return words.some((w) => name.includes(normalizeText(w)) || haystack.includes(normalizeText(w)))
-  }
-
-  const tokens = q.split(" ").filter((t) => t.length > 2)
-  if (tokens.length === 0) return true
-  return tokens.every((t) => name.includes(t)) || tokens.every((t) => haystack.includes(t))
-}
-
-function preferredSearchLabel(query: string, fallbackName: string) {
-  const q = normalizeText(query)
-  if (q.includes("golden temple")) return "Golden Temple"
-  if (q.includes("marine drive")) return "Marine Drive"
-  if (q.includes("red fort") || q.includes("lal qila") || q.includes("laal qila")) return "Red Fort"
-  if (!q) return fallbackName
-  return query.trim()
-}
-
-function getLocalSearchableText(dest: (typeof destinations)[number], searchScope: SearchScope) {
-  if (searchScope === "country") return dest.country
-  if (searchScope === "city") return dest.city
-  return [dest.name, dest.famousFor, dest.type, dest.description].join(" ")
-}
-
-function hasVerifiedPlacePhoto(image?: string | null) {
-  const src = String(image || "").trim()
-  if (!src) return false
-  if (src === "/placeholder.svg") return false
-  if (src.startsWith("data:image/svg+xml")) return false
-  return true
-}
-
-const countries = [
-  { code: "ALL", name: "All Countries" },
-  { code: "IN", name: "India" },
-  { code: "US", name: "United States" },
-  { code: "AE", name: "United Arab Emirates" },
-  { code: "GB", name: "United Kingdom" },
-  { code: "FR", name: "France" },
-  // add more anytime
-]
-
-// Derived from world_famous_places_2024 dataset regions
-const regions = [
-  "All Regions",
-  "Western Europe",
-  "Southern Europe",
-  "North America",
-  "East Asia",
-  "South Asia",
-  "Southeast Asia",
-  "South America",
-  "Middle East",
-  "North Africa",
-  "Oceania",
-]
-
-// Derived from Type column
-const placeTypes = [
-  "All Types",
-  "Monument/Tower",
-  "Museum",
-  "Historic Monument",
-  "Archaeological Site",
-  "Cathedral",
-  "Natural Wonder",
-  "Palace",
-  "Skyscraper",
-  "Cultural Building",
-  "Park",
-  "Urban Landmark",
-]
 
 export default function DestinationsPage() {
+  const router = useRouter()
+  const { tripSetup, setTripSetup, setBudgetEstimate } = useTripPlanning()
+  const isMobile = useIsMobile()
+
   const [searchQuery, setSearchQuery] = useState("")
   const [budgetRange, setBudgetRange] = useState([0, 500])
   const [selectedInterests, setSelectedInterests] = useState<string[]>([])
   const [selectedRegion, setSelectedRegion] = useState("All Regions")
+  const [selectedState, setSelectedState] = useState("All States")
   const [selectedType, setSelectedType] = useState("All Types")
   const [unescoOnly, setUnescoOnly] = useState(false)
   const [sortBy, setSortBy] = useState("popular")
-  const [useGlobalSearch, setUseGlobalSearch] = useState(true)
-  const [countryCode, setCountryCode] = useState("ALL")
-  const [searchScope, setSearchScope] = useState<SearchScope>("city")
-  const [expertise, setExpertise] = useState<ExpertiseLevel>("beginner")
-
-  const [apiLocations, setApiLocations] = useState<ApiLocation[]>([])
-  const [imageMap, setImageMap] = useState<Record<string, string>>({})
-  const [selectedLocation, setSelectedLocation] = useState<ApiLocation | null>(null)
-  const [nearbyPlaces, setNearbyPlaces] = useState<
-    Array<{ id: string; name: string; image?: string | null; formatted?: string; distance?: number; lat?: number; lon?: number }>
-  >([])
-  const [topPlaces, setTopPlaces] = useState<
-    Array<{ id: string; name: string; address: string; image?: string | null }>
-  >([])
-  const [placesLoading, setPlacesLoading] = useState(false)
-  const [apiLoading, setApiLoading] = useState(false)
-  const [apiError, setApiError] = useState<string | null>(null)
-
-  // Selection Logic
-  const router = useRouter()
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [selectedPlaces, setSelectedPlaces] = useState<SelectedPlace[]>([])
+  const [isSelectionPopoverOpen, setIsSelectionPopoverOpen] = useState(false)
+  const [isTripSetupOpen, setIsTripSetupOpen] = useState(false)
+  const [tripDateRange, setTripDateRange] = useState<DateRange | undefined>(() => {
+    const from = tripSetup.dateRange.from ? new Date(tripSetup.dateRange.from) : undefined
+    const to = tripSetup.dateRange.to ? new Date(tripSetup.dateRange.to) : undefined
+    if (!from && !to) return undefined
+    return { from, to }
+  })
+  const [travelStyle, setTravelStyle] = useState<TravelStyle>(tripSetup.travelStyle || defaultTripSetupState.travelStyle)
+  const [budgetPreference, setBudgetPreference] = useState<BudgetPreference>(
+    tripSetup.budgetPreference || defaultTripSetupState.budgetPreference
+  )
+  const [startingLocation, setStartingLocation] = useState(tripSetup.startingLocation || "")
+  const [isBudgetLoading, setIsBudgetLoading] = useState(false)
+  const [tripSetupErrors, setTripSetupErrors] = useState<{
+    destinations?: string
+    dates?: string
+    budgetPreference?: string
+  }>({})
+  const [resolvedImages, setResolvedImages] = useState<Record<string, string>>({})
+  const [isImagePrefetching, setIsImagePrefetching] = useState(false)
+  const hydratedImageCache = useRef(false)
+  const startedImagePrefetch = useRef(false)
+  const normalizedDestinations = useMemo(
+    () => destinations.map((destination) => ensureDestinationImage(destination)),
+    []
+  )
+  const regions = useMemo(
+    () => ["All Regions", ...Array.from(new Set(normalizedDestinations.map((dest) => dest.region))).sort()],
+    [normalizedDestinations]
+  )
+  const placeTypes = useMemo(
+    () => ["All Types", ...Array.from(new Set(normalizedDestinations.map((dest) => dest.type).filter(Boolean))).sort()],
+    [normalizedDestinations]
+  )
 
   useEffect(() => {
     fetch("/api/selection")
       .then((res) => res.json())
-      .then((data) => setSelectedIds(data.selectedIds || []))
-      .catch(() => { })
+      .then((data) => {
+        const nextSelectedIds = data.selectedIds || []
+        const nextSelectedPlaces = dedupeSelectedPlaces(
+          Array.isArray(data.selectedPlaces)
+            ? data.selectedPlaces.map((place: SelectedPlace) => ({
+                ...place,
+                region:
+                  normalizedDestinations.find((destination) => destination.id === place.id)?.region || place.region,
+              }))
+            : []
+        )
+
+        setSelectedIds(nextSelectedIds)
+        setSelectedPlaces(nextSelectedPlaces)
+        setTripSetup((prev) => ({
+          ...prev,
+          selectedDestinations: nextSelectedPlaces.map((place) => ({
+            id: place.id,
+            name: place.name,
+            city: place.city,
+            state: place.state,
+            country: place.country,
+            region: place.region,
+            image: place.image,
+            latitude: place.latitude,
+            longitude: place.longitude,
+            entryFee: place.entryFee,
+            budget: normalizedDestinations.find((destination) => destination.id === place.id)?.budget,
+          })),
+        }))
+      })
+      .catch(() => {})
+  }, [normalizedDestinations, setTripSetup])
+
+  useEffect(() => {
+    if (hydratedImageCache.current || typeof window === "undefined") return
+
+    hydratedImageCache.current = true
+
+    try {
+      const storedValue = window.localStorage.getItem(DESTINATION_IMAGE_CACHE_KEY)
+      if (!storedValue) return
+
+      const parsed = JSON.parse(storedValue) as Record<string, string>
+      if (!parsed || typeof parsed !== "object") return
+
+      setResolvedImages(parsed)
+    } catch {
+      // Ignore invalid cached image payloads.
+    }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined" || Object.keys(resolvedImages).length === 0) return
+
+    window.localStorage.setItem(
+      DESTINATION_IMAGE_CACHE_KEY,
+      JSON.stringify(resolvedImages)
+    )
+  }, [resolvedImages])
+
+  const buildSelectedPlace = (
+    id: string,
+    place?: {
+      name?: string
+      city?: string
+      state?: string
+      country?: string
+      region?: string
+      latitude?: number
+      longitude?: number
+      image?: string
+      entryFee?: number
+    }
+  ): SelectedPlace | null => {
+    const normalizedId = String(id)
+    const destination = normalizedDestinations.find((item) => item.id === normalizedId)
+    const name = place?.name || destination?.name
+    if (!name) return null
+
+    return {
+      id: normalizedId,
+      name,
+      city: place?.city || destination?.city,
+      state: place?.state || destination?.state,
+      country: place?.country || destination?.country,
+      region: place?.region || destination?.region,
+      latitude: place?.latitude ?? destination?.latitude,
+      longitude: place?.longitude ?? destination?.longitude,
+      image: place?.image || resolvedImages[normalizedId] || destination?.image,
+      entryFee: place?.entryFee ?? destination?.entryFee,
+    }
+  }
 
   const toggleSelection = async (
     id: string,
     place?: {
       name?: string
       city?: string
+      state?: string
       country?: string
+      region?: string
       latitude?: number
       longitude?: number
       image?: string
@@ -221,8 +303,29 @@ export default function DestinationsPage() {
     const newSelection = isSelected
       ? selectedIds.filter((sid) => sid !== id)
       : [...selectedIds, id]
+    const selectedPlace = buildSelectedPlace(id, place)
+    const nextPlaces = isSelected
+      ? selectedPlaces.filter((item) => item.id !== id)
+      : dedupeSelectedPlaces(selectedPlace ? [...selectedPlaces, selectedPlace] : selectedPlaces)
 
     setSelectedIds(newSelection)
+    setSelectedPlaces(nextPlaces)
+    setTripSetup((current) => ({
+      ...current,
+      selectedDestinations: nextPlaces.map((item) => ({
+        id: item.id,
+        name: item.name,
+        city: item.city,
+        state: item.state,
+        country: item.country,
+        region: item.region,
+        image: item.image,
+        latitude: item.latitude,
+        longitude: item.longitude,
+        entryFee: item.entryFee,
+        budget: normalizedDestinations.find((destination) => destination.id === item.id)?.budget,
+      })),
+    }))
 
     try {
       await fetch("/api/selection", {
@@ -231,63 +334,24 @@ export default function DestinationsPage() {
         body: JSON.stringify({ id, place }),
       })
     } catch {
-      // revert if failed - optional
+      // Keep the optimistic UI state if the request fails.
     }
   }
 
-  const startPlan = () => {
-    if (selectedIds.length === 0) return
-    router.push("/chat?mode=plan&startPlan=1")
-  }
-
-  const loadImage = async (key: string, query: string) => {
-    if (imageMap[key]) return
+  const clearSelectedPlaces = async () => {
+    setSelectedIds([])
+    setSelectedPlaces([])
+    setTripSetup((prev) => ({
+      ...prev,
+      selectedDestinations: [],
+    }))
 
     try {
-      const res = await fetch(`/api/images?q=${encodeURIComponent(query)}`)
-      const data = await res.json()
-
-      if (data.image) {
-        setImageMap((prev) => ({
-          ...prev,
-          [key]: data.image,
-        }))
-      }
-    } catch { }
-  }
-
-  // --------- HELPERS (ADD HERE) ---------
-  const estimateBudgetFromPopulation = (population?: number) => {
-    const pop = population && population > 0 ? population : 500_000 // default fallback
-
-    const base =
-      pop >= 5_000_000 ? 120 :
-        pop >= 1_000_000 ? 90 :
-          pop >= 200_000 ? 65 :
-            45
-
-    const expertiseMultiplier =
-      expertise === "beginner" ? 1 :
-        expertise === "intermediate" ? 1.1 :
-          1.25
-
-    return {
-      min: Math.round(base * 0.7 * expertiseMultiplier),
-      max: Math.round(base * 2 * expertiseMultiplier),
-      currency: "USD" as const,
+      await fetch("/api/selection", { method: "DELETE" })
+    } catch {
+      // Keep the optimistic UI state if the request fails.
     }
   }
-
-
-  const expertiseAllows = (population?: number) => {
-    // If population is missing or zero, DO NOT block
-    if (!population || population === 0) return true
-
-    if (expertise === "beginner") return population >= 200_000
-    if (expertise === "intermediate") return population >= 50_000
-    return true
-  }
-
 
   const toggleInterest = (interest: string) => {
     setSelectedInterests((prev) =>
@@ -309,28 +373,163 @@ export default function DestinationsPage() {
     setBudgetRange([0, 500])
     setSelectedInterests([])
     setSelectedRegion("All Regions")
+    setSelectedState("All States")
     setSelectedType("All Types")
     setUnescoOnly(false)
     setSortBy("popular")
-    setSearchScope("city")
   }
 
-  // Filter logic maps to dataset columns:
-  // searchQuery -> scoped field based on searchScope (country/city/place)
-  // budgetRange -> budget.min/budget.max
-  // selectedInterests -> interests[]
-  // selectedRegion -> region (from world_famous_places Region column)
-  // selectedType -> type (from world_famous_places Type column)
-  // unescoOnly -> isUNESCO (from UNESCO_World_Heritage column)
+  const states = useMemo(
+    () => ["All States", ...Array.from(new Set(normalizedDestinations.map((dest) => dest.state).filter(Boolean) as string[])).sort()],
+    [normalizedDestinations]
+  )
+
+  const startPlan = () => {
+    if (selectedIds.length === 0) {
+      toast.error("Please select at least one destination to start planning.")
+      return
+    }
+    setIsSelectionPopoverOpen(false)
+    setIsTripSetupOpen(true)
+  }
+
+  const selectedPlacesWithImages = useMemo(
+    () =>
+      dedupeSelectedPlaces(
+        selectedPlaces.map((place) => ({
+          ...place,
+          image:
+            resolvedImages[place.id] ||
+            place.image ||
+            normalizedDestinations.find((destination) => destination.id === place.id)?.image,
+          region:
+            place.region ||
+            normalizedDestinations.find((destination) => destination.id === place.id)?.region,
+        }))
+      ),
+    [normalizedDestinations, resolvedImages, selectedPlaces]
+  )
+
+  const selectedDestinationsForSetup = useMemo(
+    () =>
+      selectedPlacesWithImages.map((place) => ({
+        id: place.id,
+        name: place.name,
+        city: place.city,
+        state: place.state,
+        country: place.country,
+        region: place.region,
+        image: place.image,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        entryFee: place.entryFee,
+        budget: normalizedDestinations.find((destination) => destination.id === place.id)?.budget,
+      })) as SelectedDestination[],
+    [normalizedDestinations, selectedPlacesWithImages]
+  )
+
+  const durationSummary = useMemo(() => {
+    if (!tripDateRange?.from || !tripDateRange?.to) return null
+    return getTripDuration({
+      from: tripDateRange.from.toISOString(),
+      to: tripDateRange.to.toISOString(),
+    })
+  }, [tripDateRange])
+
+  const tripDistancePreview = useMemo(
+    () => estimateTravelDistance(selectedDestinationsForSetup),
+    [selectedDestinationsForSetup]
+  )
+
+  const canEstimateBudget =
+    selectedDestinationsForSetup.length > 0 &&
+    Boolean(tripDateRange?.from) &&
+    Boolean(tripDateRange?.to) &&
+    Boolean(budgetPreference)
+
+  const handleEstimateBudget = async () => {
+    const nextErrors: typeof tripSetupErrors = {}
+    if (!selectedDestinationsForSetup.length) {
+      nextErrors.destinations = "Please select at least one destination."
+    }
+    if (!tripDateRange?.from || !tripDateRange?.to) {
+      nextErrors.dates = "Select your departure and return dates."
+    }
+    if (!budgetPreference) {
+      nextErrors.budgetPreference = "Choose a budget preference."
+    }
+
+    setTripSetupErrors(nextErrors)
+
+    if (Object.keys(nextErrors).length > 0) {
+      toast.error("Please complete the required trip details.")
+      return
+    }
+
+    setIsBudgetLoading(true)
+    const confirmedFrom = tripDateRange?.from
+    const confirmedTo = tripDateRange?.to
+    if (!confirmedFrom || !confirmedTo) {
+      setIsBudgetLoading(false)
+      return
+    }
+
+    const nextTripSetup = {
+      selectedDestinations: selectedDestinationsForSetup,
+      dateRange: {
+        from: confirmedFrom.toISOString(),
+        to: confirmedTo.toISOString(),
+      },
+      travelStyle,
+      budgetPreference,
+      startingLocation,
+    }
+
+    setTripSetup(nextTripSetup)
+    setBudgetEstimate(null)
+    window.localStorage.setItem(TRIP_SETUP_STORAGE_KEY, JSON.stringify(nextTripSetup))
+    window.localStorage.setItem(
+      "WANDERLY_TRIP_CONTEXT",
+      JSON.stringify({
+        selectedPlaces: selectedDestinationsForSetup,
+        startDate: nextTripSetup.dateRange.from,
+        endDate: nextTripSetup.dateRange.to,
+        travelStyle,
+        budgetLevel:
+          budgetPreference === "budget"
+            ? "low"
+            : budgetPreference === "mid-range"
+              ? "medium"
+              : "premium",
+        origin: startingLocation,
+        estimatedDistanceKm: tripDistancePreview.totalDistanceKm,
+        routeNames: tripDistancePreview.routeNames,
+      })
+    )
+
+    setTimeout(() => {
+      setIsBudgetLoading(false)
+      setIsTripSetupOpen(false)
+      router.push("/budget")
+    }, 700)
+  }
+
+  const dateInputLabel = tripDateRange?.from
+    ? tripDateRange?.to
+      ? `${format(tripDateRange.from, "dd MMM")} - ${format(tripDateRange.to, "dd MMM")} • ${durationSummary?.totalDays || 0} Days`
+      : `${format(tripDateRange.from, "dd MMM yyyy")} - Select return date`
+    : "Select start and end dates"
+
   const filteredDestinations = useMemo(() => {
     const normalizedQuery = normalizeSearchText(searchQuery)
     const queryTokens = normalizedQuery.split(" ").filter(Boolean)
 
-    let filtered = destinations.filter((dest) => {
+    let filtered = normalizedDestinations.filter((dest) => {
       if (queryTokens.length > 0) {
-        const searchable = normalizeSearchText(getLocalSearchableText(dest, searchScope))
-        const hasAllTokens = queryTokens.every((token) => searchable.includes(token))
-        if (!hasAllTokens) return false
+        const fieldMatch = matchesDestinationSearch(dest, normalizedQuery)
+        const searchable = normalizeSearchText(getSearchableText(dest))
+        const tokenMatch = queryTokens.every((token) => searchable.includes(token))
+        if (!fieldMatch && !tokenMatch) return false
       }
 
       if (dest.budget.min > budgetRange[1] || dest.budget.max < budgetRange[0]) {
@@ -350,7 +549,11 @@ export default function DestinationsPage() {
         return false
       }
 
-      if (selectedType !== "All Types" && !dest.type.includes(selectedType.replace("All Types", ""))) {
+      if (selectedState !== "All States" && dest.state !== selectedState) {
+        return false
+      }
+
+      if (selectedType !== "All Types" && !dest.type.includes(selectedType)) {
         return false
       }
 
@@ -361,11 +564,45 @@ export default function DestinationsPage() {
       return true
     })
 
-    // Sort using dataset fields:
-    // popular = annualVisitors (Annual_Visitors_Millions)
-    // rating = rating
-    // price-low/high = budget.min
-    // revenue = tourismRevenue (Tourism_Revenue_Million_USD)
+    if (filtered.length === 0 && normalizedQuery) {
+      const exactStateMatches = normalizedDestinations.filter(
+        (dest) => normalizeSearchText(dest.state || "") === normalizedQuery
+      )
+
+      if (exactStateMatches.length > 0) {
+        filtered = exactStateMatches
+      }
+    }
+
+    if (filtered.length === 0 && normalizedQuery) {
+      const exactCountryOrCityMatches = normalizedDestinations.filter((dest) => {
+        const countryMatch = getCountrySearchTerms(dest.country)
+          .map((term) => normalizeSearchText(term))
+          .some((term) => term === normalizedQuery)
+        const cityMatch = normalizeSearchText(dest.city || "") === normalizedQuery
+        return countryMatch || cityMatch
+      })
+
+      if (exactCountryOrCityMatches.length > 0) {
+        filtered = exactCountryOrCityMatches
+      }
+    }
+
+    if (filtered.length === 0 && normalizedQuery) {
+      filtered = normalizedDestinations.filter((dest) => {
+        const stateMatch = normalizeSearchText(dest.state || "").includes(normalizedQuery)
+        const cityMatch = normalizeSearchText(dest.city || "").includes(normalizedQuery)
+        const countryMatch = getCountrySearchTerms(dest.country)
+          .map((term) => normalizeSearchText(term))
+          .some((term) => term.includes(normalizedQuery))
+        const tagMatch = [...(dest.tags || []), ...dest.interests]
+          .map((tag) => normalizeSearchText(tag))
+          .some((tag) => tag.includes(normalizedQuery))
+
+        return stateMatch || cityMatch || countryMatch || tagMatch
+      })
+    }
+
     switch (sortBy) {
       case "price-low":
         filtered.sort((a, b) => a.budget.min - b.budget.min)
@@ -388,221 +625,79 @@ export default function DestinationsPage() {
     }
 
     return filtered
-  }, [searchQuery, searchScope, budgetRange, selectedInterests, selectedRegion, selectedType, unescoOnly, sortBy])
+  }, [searchQuery, budgetRange, selectedInterests, selectedRegion, selectedState, selectedType, unescoOnly, sortBy, normalizedDestinations])
 
   useEffect(() => {
-    if (useGlobalSearch) return
-    if (searchQuery.trim().length < 2) return
-    if (filteredDestinations.length > 0) return
-    setUseGlobalSearch(true)
-  }, [useGlobalSearch, searchQuery, filteredDestinations.length])
+    if (startedImagePrefetch.current) return
+    startedImagePrefetch.current = true
 
-  // --------- GLOBAL SEARCH (GEONAMES) ---------
-  useEffect(() => {
-    if (!useGlobalSearch) return
+    const pendingDestinations = normalizedDestinations.filter((place) => {
+      const currentImage = resolvedImages[place.id] || place.image
+      return !currentImage || currentImage.includes("source.unsplash.com")
+    })
 
-    const q = searchQuery.trim()
-    if (q.length < 2) {
-      setApiLocations([])
-      setApiError(null)
-      return
-    }
+    if (pendingDestinations.length === 0) return
 
-    setApiLoading(true)
-    setApiError(null)
-    console.log("useGlobalSearch:", useGlobalSearch, "searchQuery:", searchQuery, "country:", countryCode, "scope:", searchScope)
-
-    const timer = setTimeout(async () => {
-      try {
-        console.log("Fetching GeoNames...")
-
-        const countryQuery = countryCode === "ALL" ? "" : countryCode
-        const res = await fetch(
-          `/api/locations/search?q=${encodeURIComponent(q)}&country=${countryQuery}&scope=${encodeURIComponent(searchScope)}`
-        )
-
-        const contentType = res.headers.get("content-type") || ""
-        if (!contentType.includes("application/json")) {
-          const text = await res.text()
-          throw new Error("API did not return JSON. Check API route. " + text.slice(0, 80))
-        }
-        const data = await res.json()
-        if (!res.ok) throw new Error(data?.error || "Failed to fetch locations")
-
-        const results: ApiLocation[] = (data.results || [])
-          .filter((p: ApiLocation) => expertiseAllows(p.population))
-          .filter((p: ApiLocation) => {
-            const b = estimateBudgetFromPopulation(p.population)
-            return !(b.min > budgetRange[1] || b.max < budgetRange[0])
-          })
-          .sort((a: ApiLocation, b: ApiLocation) => locationRelevanceScore(b, q) - locationRelevanceScore(a, q))
-
-        console.log("GeoNames results:", data.results?.length, data.results)
-
-        const withImages = await Promise.all(
-          results.map(async (loc) => {
-            try {
-              const q = `${loc.name}, ${loc.state || loc.country}`
-              const res = await fetch(`/api/images?q=${encodeURIComponent(q)}`)
-              const data = await res.json()
-
-              return {
-                ...loc,
-                image: data.image || "/placeholder.svg",
-              }
-            } catch {
-              return {
-                ...loc,
-                image: "/placeholder.svg",
-              }
-            }
-          })
-        )
-
-        setApiLocations(withImages)
-
-        // Auto-select known landmark override if present; else only when a single result exists.
-        const nq = normalizeText(q)
-        const landmarkPreferred = withImages.find((loc) => {
-          const name = normalizeText(loc.name)
-          const state = normalizeText(loc.state || "")
-          const country = normalizeText(loc.country || "")
-          if (nq.includes("golden temple")) {
-            return name.includes("golden temple") || name.includes("harmandir")
-          }
-          if (nq.includes("marine drive")) {
-            return name.includes("marine drive") && (state.includes("mumbai") || country.includes("india"))
-          }
-          if (nq.includes("red fort") || nq.includes("lal qila") || nq.includes("laal qila")) {
-            return (name.includes("red fort") || name.includes("lal qila")) && (state.includes("delhi") || country.includes("india"))
-          }
-          return false
-        })
-
-        if (landmarkPreferred) {
-          setSelectedLocation(landmarkPreferred)
-        } else if (withImages.length === 1) {
-          setSelectedLocation(withImages[0])
-        }
-
-      } catch (err: any) {
-        setApiLocations([])
-        setApiError(err.message || "Failed to fetch locations")
-      } finally {
-        setApiLoading(false)
-      }
-    }, 400)
-
-    return () => clearTimeout(timer)
-  }, [useGlobalSearch, searchQuery, countryCode, searchScope, expertise, budgetRange])
-
-  useEffect(() => {
-    if (!useGlobalSearch) return
-    if (apiLocations.length === 0) return
+    let cancelled = false
+    setIsImagePrefetching(true)
 
     const loadImages = async () => {
-      await Promise.all(
-        apiLocations.map(async (loc) => {
-          const key = `geo-${loc.id}`
-          const imageQuery = `${loc.name}, ${loc.state || loc.country}, travel`
-          await loadImage(key, imageQuery)
+      try {
+        const queryById = Object.fromEntries(
+          pendingDestinations.map((place) => [place.id, buildImageQuery(place)])
+        )
+        const response = await fetch("/api/images", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            queries: Object.values(queryById),
+          }),
         })
-      )
-    }
+        const data = await response.json()
+        const imageMap = data?.images && typeof data.images === "object" ? data.images : {}
 
-    loadImages()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiLocations, useGlobalSearch])
+        if (cancelled) return
 
-  // --------- PLACES NEAR SELECTED CITY (GEOAPIFY) ---------
-  useEffect(() => {
-    if (!selectedLocation) return
-
-    const loadTopPlaces = async () => {
-      setPlacesLoading(true)
-      try {
-        const res = await fetch(
-          `/api/places/top?lat=${selectedLocation.lat}&lon=${selectedLocation.lon}&limit=5`
-        )
-        const data = await res.json()
-        if (!res.ok) throw new Error(data?.error || "Failed to fetch places")
-        const places = Array.isArray(data?.places) ? data.places : []
-        setNearbyPlaces(places.filter((place: any) => hasVerifiedPlacePhoto(place?.image)))
+        setResolvedImages((prev) => {
+          const next = { ...prev }
+          for (const place of pendingDestinations) {
+            const resolvedImage = imageMap[queryById[place.id]] || prev[place.id] || destinationFallbackImage
+            next[place.id] = resolvedImage
+          }
+          return next
+        })
       } catch {
-        setNearbyPlaces([])
+        if (cancelled) return
+
+        setResolvedImages((prev) => {
+          const next = { ...prev }
+          for (const place of pendingDestinations) {
+            next[place.id] = prev[place.id] || destinationFallbackImage
+          }
+          return next
+        })
       } finally {
-        setPlacesLoading(false)
+        if (!cancelled) {
+          setIsImagePrefetching(false)
+        }
       }
     }
 
-    loadTopPlaces()
-  }, [selectedLocation])
+    void loadImages()
 
-  useEffect(() => {
-    if (!selectedLocation) return
-
-    const loadTopPlaces = async () => {
-      try {
-        const res = await fetch(
-          `/api/places/nearby?lat=${selectedLocation.lat}&lon=${selectedLocation.lon}`
-        )
-        const data = await res.json()
-        setTopPlaces(data.places || [])
-      } catch {
-        setTopPlaces([])
-      }
+    return () => {
+      cancelled = true
     }
-
-    loadTopPlaces()
-  }, [selectedLocation])
-
+  }, [normalizedDestinations, resolvedImages])
 
   const activeFiltersCount =
     (searchQuery ? 1 : 0) +
     (budgetRange[0] > 0 || budgetRange[1] < 500 ? 1 : 0) +
     selectedInterests.length +
     (selectedRegion !== "All Regions" ? 1 : 0) +
+    (selectedState !== "All States" ? 1 : 0) +
     (selectedType !== "All Types" ? 1 : 0) +
     (unescoOnly ? 1 : 0)
-
-  const displayedNearbyPlaces = useMemo(() => {
-    if (!useGlobalSearch) return nearbyPlaces
-    const q = searchQuery.trim()
-    if (!q) return nearbyPlaces
-    const matched = nearbyPlaces.filter((p) => placeMatchesQuery({ name: p.name, formatted: p.formatted }, q))
-    return matched.length > 0 ? matched : nearbyPlaces
-  }, [useGlobalSearch, searchQuery, nearbyPlaces])
-
-  const searchedPlace = useMemo(() => {
-    if (!useGlobalSearch) return null
-    const q = searchQuery.trim()
-    if (!q || displayedNearbyPlaces.length === 0) return null
-    return displayedNearbyPlaces.find((p) => placeMatchesQuery({ name: p.name, formatted: p.formatted }, q)) || displayedNearbyPlaces[0] || null
-  }, [useGlobalSearch, searchQuery, displayedNearbyPlaces])
-
-  const nearbyWithoutSearchedPlace = useMemo(() => {
-    if (!searchedPlace) return displayedNearbyPlaces
-    return displayedNearbyPlaces.filter((p) => String(p.id) !== String(searchedPlace.id))
-  }, [displayedNearbyPlaces, searchedPlace])
-
-  const searchedPlaceDisplay = useMemo(() => {
-    if (!searchedPlace) return null
-    if (!hasVerifiedPlacePhoto(searchedPlace.image)) return null
-    const displayName = preferredSearchLabel(searchQuery, searchedPlace.name)
-    const officialName = searchedPlace.name
-    const description = searchedPlace.formatted || `Explore ${officialName}`
-    const mergedDescription =
-      normalizeText(displayName) !== normalizeText(officialName)
-        ? `Official name: ${officialName}. ${description}`
-        : description
-
-    return {
-      ...searchedPlace,
-      image: searchedPlace.image,
-      displayName,
-      mergedDescription,
-    }
-  }, [searchedPlace, searchQuery])
 
   const FilterContent = () => (
     <div className="space-y-6">
@@ -638,6 +733,22 @@ export default function DestinationsPage() {
       </div>
 
       <div>
+        <Label className="mb-2 block text-sm font-medium">State</Label>
+        <Select value={selectedState} onValueChange={setSelectedState}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {states.map((state) => (
+              <SelectItem key={state} value={state}>
+                {state}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div>
         <Label className="mb-2 block text-sm font-medium">Place Type</Label>
         <Select value={selectedType} onValueChange={setSelectedType}>
           <SelectTrigger>
@@ -655,9 +766,9 @@ export default function DestinationsPage() {
 
       <div>
         <button
-          onClick={() => setUnescoOnly(!unescoOnly)}
+          onClick={() => setUnescoOnly((prev) => !prev)}
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg border p-3 transition-colors",
+            "flex w-full items-center gap-2 rounded-lg border p-3 text-left transition-colors",
             unescoOnly ? "border-chart-3 bg-chart-3/10" : "hover:bg-secondary"
           )}
         >
@@ -711,161 +822,20 @@ export default function DestinationsPage() {
           </p>
         </div>
 
-        <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-
-
-          {/* 🔹 GLOBAL SEARCH + COUNTRY + EXPERTISE (ADD HERE) */}
-          <div className="flex flex-wrap items-center gap-3">
-            {useGlobalSearch && apiError && (
-              <div className="mb-4 w-full rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-                {apiError}
-              </div>
-            )}
-
-            <Button
-              type="button"
-              variant={useGlobalSearch ? "default" : "outline"}
-              className="gap-2 bg-transparent"
-              onClick={() => {
-                setUseGlobalSearch((v) => !v)
-                setApiLocations([])
-                setSelectedLocation(null)
-                setNearbyPlaces([])
-                setApiError(null)
-              }}
-            >
-              <Globe className="h-4 w-4" />
-              {useGlobalSearch ? "Global Search ON" : "Global Search"}
-            </Button>
-
-            <Button
-              variant={selectedIds.length > 0 ? "default" : "outline"}
-              className={cn(
-                "gap-2",
-                selectedIds.length > 0 ? "bg-primary text-primary-foreground shadow-md animate-pulse" : "bg-transparent opacity-50 cursor-not-allowed"
-              )}
-              onClick={startPlan}
-              disabled={selectedIds.length === 0}
-            >
-              <Plane className="h-4 w-4" />
-              Start Plan {selectedIds.length > 0 && `(${selectedIds.length})`}
-            </Button>
-
-            {useGlobalSearch && (
-              <>
-                <Select
-                  value={searchScope}
-                  onValueChange={(v) => {
-                    setSearchScope(v as SearchScope)
-                    setSelectedLocation(null)
-                    setApiLocations([])
-                    setNearbyPlaces([])
-                    setTopPlaces([])
-                    setApiError(null)
-                  }}
-                >
-                  <SelectTrigger className="w-[150px]">
-                    <SelectValue placeholder="Search In" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="country">Country</SelectItem>
-                    <SelectItem value="city">City</SelectItem>
-                    <SelectItem value="place">Place</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Select value={countryCode} onValueChange={setCountryCode}>
-                  <SelectTrigger className="w-[160px]">
-                    <SelectValue placeholder="Country" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {countries.map((c) => (
-                      <SelectItem key={c.code} value={c.code}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={expertise}
-                  onValueChange={(v) => setExpertise(v as ExpertiseLevel)}
-                >
-                  <SelectTrigger className="w-[160px]">
-                    <SelectValue placeholder="Expertise" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="beginner">Beginner</SelectItem>
-                    <SelectItem value="intermediate">Intermediate</SelectItem>
-                    <SelectItem value="expert">Expert</SelectItem>
-                  </SelectContent>
-                </Select>
-              </>
-            )}
-          </div>
-
-          {/* 🔹 EXISTING SEARCH INPUT (KEEP AS-IS) */}
-          <div className="relative min-w-[240px] flex-1 lg:max-w-md">
+        <div className="mb-8 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="relative w-full xl:max-w-xl">
             <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder={
-                useGlobalSearch
-                  ? searchScope === "country"
-                    ? "Search country (e.g. India, France, Japan)"
-                    : searchScope === "city"
-                      ? "Search city or town (e.g. Agra, Paris, Kyoto)"
-                      : "Search place (e.g. Eiffel Tower, Golden Temple)"
-                  : searchScope === "country"
-                    ? "Search by country..."
-                    : searchScope === "city"
-                      ? "Search by city..."
-                      : "Search by place..."
-              }
+              placeholder="Search by state, city, country, or destination"
               value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value)
-                if (selectedLocation) {
-                  setSelectedLocation(null)
-                  setNearbyPlaces([])
-                  setTopPlaces([])
-                }
-              }}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
             />
-            {useGlobalSearch && searchQuery.trim().length >= 2 && !selectedLocation && (
-              <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border bg-card shadow-sm">
-                {apiLoading ? (
-                  <div className="p-3 text-sm text-muted-foreground">Searching...</div>
-                ) : apiLocations.length > 0 ? (
-                  apiLocations.slice(0, 6).map((loc) => (
-                    <button
-                      key={loc.id}
-                      className="w-full text-left px-3 py-2 hover:bg-secondary text-sm"
-                      onClick={() => {
-                        setSelectedLocation(loc)
-                        setApiLocations([])
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-medium">{loc.name}</div>
-                        <span className="text-xs uppercase text-muted-foreground">{loc.kind || searchScope}</span>
-                      </div>
-                      <div className="text-muted-foreground">
-                        {loc.state ? `${loc.state}, ` : ""}{loc.country}
-                      </div>
-                    </button>
-                  ))
-                ) : (
-                  <div className="p-3 text-sm text-muted-foreground">No matches</div>
-                )}
-              </div>
-            )}
           </div>
 
-          {/* 🔹 SORT + FILTER BUTTONS (KEEP AS-IS) */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-full sm:w-[200px]">
                 <SelectValue placeholder="Sort by" />
               </SelectTrigger>
               <SelectContent>
@@ -877,29 +847,180 @@ export default function DestinationsPage() {
               </SelectContent>
             </Select>
 
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="outline" className="gap-2 lg:hidden bg-transparent">
-                  <SlidersHorizontal className="h-4 w-4" />
-                  Filters
+            <Popover open={isSelectionPopoverOpen} onOpenChange={setIsSelectionPopoverOpen}>
+              <div className="flex w-full items-center sm:w-auto">
+                <Button
+                  variant={selectedIds.length > 0 ? "default" : "outline"}
+                  className={cn(
+                    "h-11 flex-1 justify-between rounded-r-none border-r-0 px-4 shadow-sm sm:min-w-[190px]",
+                    selectedIds.length > 0
+                      ? "bg-primary text-primary-foreground shadow-md hover:bg-primary/90"
+                      : "bg-card text-foreground hover:bg-secondary"
+                  )}
+                  onClick={startPlan}
+                  disabled={selectedIds.length === 0}
+                >
+                  <span className="flex items-center gap-2">
+                    <Plane className="h-4 w-4" />
+                    Start Plan
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "inline-flex min-w-6 items-center justify-center rounded-full px-2 py-0.5 text-xs font-semibold",
+                        selectedIds.length > 0
+                          ? "bg-white/20 text-primary-foreground"
+                          : "bg-secondary text-foreground"
+                      )}
+                    >
+                      {selectedIds.length}
+                    </span>
+                  </span>
                 </Button>
-              </SheetTrigger>
-              <SheetContent side="right" className="w-full sm:max-w-md">
-                <SheetHeader>
-                  <SheetTitle>Filters</SheetTitle>
-                </SheetHeader>
-                <div className="mt-6">
-                  <FilterContent />
+                <PopoverTrigger asChild>
+                  <Button
+                    variant={selectedIds.length > 0 ? "default" : "outline"}
+                    size="icon"
+                    className={cn(
+                      "h-11 rounded-l-none border-l px-3 shadow-sm",
+                      selectedIds.length > 0
+                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                        : "bg-card text-foreground hover:bg-secondary"
+                    )}
+                    aria-label="View selected places"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+              </div>
+              <PopoverContent
+                align="end"
+                sideOffset={10}
+                className="w-[min(92vw,24rem)] rounded-2xl border border-border/60 bg-background/95 p-0 shadow-2xl backdrop-blur"
+              >
+                <div className="border-b border-border/60 px-4 py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Selected places</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Selected Places: {selectedIds.length}
+                      </p>
+                    </div>
+                    {selectedIds.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 rounded-full px-3 text-muted-foreground hover:text-foreground"
+                        onClick={clearSelectedPlaces}
+                      >
+                        Clear all
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </SheetContent>
-            </Sheet>
+
+                {selectedPlacesWithImages.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center px-6 py-8 text-center">
+                    <div className="mb-3 rounded-full bg-primary/10 p-3 text-primary">
+                      <Sparkles className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">No destinations selected yet.</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Add places from the cards to build your trip shortlist.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="max-h-80 space-y-2 overflow-y-auto px-3 py-3">
+                      {selectedPlacesWithImages.map((place) => {
+                        const location = [place.city, place.state, place.country].filter(Boolean).join(", ")
+                        return (
+                          <div
+                            key={place.id}
+                            className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/70 px-3 py-2 transition-colors hover:bg-secondary/70"
+                          >
+                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-muted">
+                              {place.image ? (
+                                <img
+                                  src={place.image}
+                                  alt={place.name}
+                                  className="h-full w-full object-cover"
+                                  loading="lazy"
+                                  referrerPolicy="no-referrer"
+                                />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                                  <MapPin className="h-4 w-4" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-foreground">{place.name}</p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {location || place.region || "Selected destination"}
+                              </p>
+                              {place.region && (
+                                <p className="mt-0.5 text-xs text-muted-foreground/80">{place.region}</p>
+                              )}
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 shrink-0 rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={`Remove ${place.name} from selected places`}
+                              onClick={() =>
+                                toggleSelection(place.id, {
+                                  name: place.name,
+                                  city: place.city,
+                                  state: place.state,
+                                  country: place.country,
+                                  region: place.region,
+                                  latitude: place.latitude,
+                                  longitude: place.longitude,
+                                  image: place.image,
+                                  entryFee: place.entryFee,
+                                })
+                              }
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    <div className="border-t border-border/60 px-4 py-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs text-muted-foreground">
+                          Review, adjust, and continue when your shortlist looks right.
+                        </p>
+                        <Button className="rounded-full px-4" onClick={startPlan}>
+                          Open trip setup
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </PopoverContent>
+            </Popover>
           </div>
-
-
-
         </div>
 
-        <div className="flex gap-8">
+        <section className="mb-6 lg:hidden">
+          <div className="rounded-xl border bg-card p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-semibold text-foreground">Filters</h2>
+              {activeFiltersCount > 0 && (
+                <Button variant="ghost" size="sm" onClick={clearFilters}>
+                  Clear
+                </Button>
+              )}
+            </div>
+            <FilterContent />
+          </div>
+        </section>
+
+        <div className="flex flex-col gap-8 lg:flex-row">
           <aside className="hidden w-72 shrink-0 lg:block">
             <div className="sticky top-24 rounded-xl border bg-card p-6">
               <div className="mb-4 flex items-center justify-between">
@@ -936,6 +1057,12 @@ export default function DestinationsPage() {
                     <X className="h-3 w-3 cursor-pointer" onClick={() => setSelectedRegion("All Regions")} />
                   </Badge>
                 )}
+                {selectedState !== "All States" && (
+                  <Badge variant="secondary" className="gap-1">
+                    {selectedState}
+                    <X className="h-3 w-3 cursor-pointer" onClick={() => setSelectedState("All States")} />
+                  </Badge>
+                )}
                 {selectedType !== "All Types" && (
                   <Badge variant="secondary" className="gap-1">
                     {selectedType}
@@ -957,158 +1084,35 @@ export default function DestinationsPage() {
               </div>
             )}
 
-            {useGlobalSearch && searchQuery.trim().length > 0 && searchQuery.trim().length < 2 && (
-              <div className="mb-4 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-                Type at least 2 letters to search locations.
+            <p className="mb-6 text-sm text-muted-foreground">
+              Showing {filteredDestinations.length} of {destinations.length} destinations
+            </p>
+
+            {isImagePrefetching && (
+              <div className="mb-6 flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading destination images...
               </div>
             )}
 
-            <p className="mb-6 text-sm text-muted-foreground">
-              {useGlobalSearch
-                ? `Showing ${
-                    selectedLocation ? displayedNearbyPlaces.length : apiLocations.length
-                  } ${
-                    (selectedLocation ? displayedNearbyPlaces.length : apiLocations.length) === 1 ? "location" : "locations"
-                  }`
-                : `Showing ${filteredDestinations.length} of ${destinations.length} destinations`}
-            </p>
-
-
-            {useGlobalSearch ? (
-              selectedLocation ? (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-xl font-semibold">
-                      Top places near {selectedLocation.name}
-                    </h2>
-                    <Button
-                      variant="outline"
-                      className="bg-transparent"
-                      onClick={() => {
-                        setSelectedLocation(null)
-                        setNearbyPlaces([])
-                      }}
-                    >
-                      Change city
-                    </Button>
-                  </div>
-
-                  {placesLoading ? (
-                    <div className="rounded-xl border bg-card p-12 text-center">
-                      <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-muted-foreground" />
-                      <p className="mb-1 text-lg font-medium">Loading places...</p>
-                      <p className="text-muted-foreground">Fetching nearby places for {selectedLocation.name}</p>
-                    </div>
-                  ) : displayedNearbyPlaces.length > 0 ? (
-                    <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
-                      {searchedPlaceDisplay && (
-                        <div>
-                          <h3 className="mb-3 text-sm font-semibold text-foreground">Searched Place</h3>
-                          <DestinationCard
-                            key={searchedPlaceDisplay.id}
-                            id={searchedPlaceDisplay.id}
-                            name={searchedPlaceDisplay.displayName}
-                            country={selectedLocation.country}
-                            city={selectedLocation.state || ""}
-                            image={searchedPlaceDisplay.image || "/placeholder.svg"}
-                            description={searchedPlaceDisplay.mergedDescription}
-                            bestTime="Year round"
-                            budget={estimateBudgetFromPopulation(selectedLocation.population)}
-                            rating={4.7}
-                            interests={["culture", "history", "food"]}
-                            type="Famous Spot"
-                            className="h-full"
-                            isSelected={selectedIds.includes(searchedPlaceDisplay.id)}
-                            onToggleSelection={() =>
-                              toggleSelection(searchedPlaceDisplay.id, {
-                                name: searchedPlaceDisplay.displayName,
-                                city: selectedLocation.name,
-                                country: selectedLocation.country,
-                                latitude: Number(searchedPlaceDisplay.lat),
-                                longitude: Number(searchedPlaceDisplay.lon),
-                                image: searchedPlaceDisplay.image || undefined,
-                              })
-                            }
-                          />
-                        </div>
-                      )}
-
-                      {nearbyWithoutSearchedPlace.length > 0 && (
-                        <div>
-                          <h3 className="mb-3 text-sm font-semibold text-foreground">Nearby Places</h3>
-                          <div className="grid gap-6 sm:grid-cols-2">
-                            {nearbyWithoutSearchedPlace.slice(0, 6).map((place) => (
-                              <DestinationCard
-                                key={place.id}
-                                id={place.id}
-                                name={place.name}
-                                country={selectedLocation.country}
-                                city={selectedLocation.state || ""}
-                                image={place.image || "/placeholder.svg"}
-                                description={place.formatted || `Explore ${place.name}`}
-                                bestTime="Year round"
-                                budget={estimateBudgetFromPopulation(selectedLocation.population)}
-                                rating={4.7}
-                                interests={["culture", "history", "food"]}
-                                type="Famous Spot"
-                                className="h-full"
-                                isSelected={selectedIds.includes(place.id)}
-                                onToggleSelection={() =>
-                                  toggleSelection(place.id, {
-                                    name: place.name,
-                                    city: selectedLocation.name,
-                                    country: selectedLocation.country,
-                                    latitude: Number(place.lat),
-                                    longitude: Number(place.lon),
-                                    image: place.image || undefined,
-                                  })
-                                }
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border bg-card p-12 text-center">
-                      <p className="mb-2 text-lg font-medium">No famous places found</p>
-                      <p className="text-muted-foreground">
-                        Try another city (or increase search radius)
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                apiLoading && searchQuery.trim().length >= 2 ? (
-                  <div className="rounded-xl border bg-card p-12 text-center">
-                    <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-muted-foreground" />
-                    <p className="mb-1 text-lg font-medium">Searching places...</p>
-                    <p className="text-muted-foreground">Finding results for "{searchQuery.trim()}"</p>
-                  </div>
-                ) : (
-                  <div className="rounded-xl border bg-card p-12 text-center">
-                    <p className="mb-2 text-lg font-medium">Search a city to begin</p>
-                    <p className="text-muted-foreground">
-                      Example: Agra, Paris, Jaipur, Dubai
-                    </p>
-                  </div>
-                )
-              )
-            ) : filteredDestinations.length > 0 ? (
+            {filteredDestinations.length > 0 ? (
               <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
                 {filteredDestinations.map((destination) => (
                   <DestinationCard
                     key={destination.id}
                     {...destination}
+                    image={resolvedImages[destination.id] || destination.image || destinationFallbackImage}
                     isSelected={selectedIds.includes(destination.id)}
                     onToggleSelection={() =>
                       toggleSelection(destination.id, {
                         name: destination.name,
                         city: destination.city,
+                        state: destination.state,
                         country: destination.country,
+                        region: destination.region,
                         latitude: Number(destination.latitude),
                         longitude: Number(destination.longitude),
-                        image: destination.image,
+                        image: resolvedImages[destination.id] || destination.image,
                         entryFee: destination.entryFee,
                       })
                     }
@@ -1121,15 +1125,265 @@ export default function DestinationsPage() {
                   No destinations found
                 </p>
                 <p className="mb-4 text-muted-foreground">
-                  Try adjusting your filters to see more results
+                  Try adjusting your search or filters to see more results
                 </p>
                 <Button onClick={clearFilters}>Clear Filters</Button>
               </div>
             )}
-
-          </div> {/* flex-1 */}
-        </div> {/* flex gap-8 */}
+          </div>
+        </div>
       </main>
+
+      <Dialog open={isTripSetupOpen} onOpenChange={setIsTripSetupOpen}>
+        <DialogContent className="max-h-[92vh] max-w-6xl overflow-hidden rounded-[2rem] border border-white/40 bg-background/95 p-0 shadow-2xl backdrop-blur">
+          <div className="grid max-h-[92vh] grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.8fr)]">
+            <div className="overflow-y-auto border-b border-border/60 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.14),_transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.92))] p-6 lg:border-b-0 lg:border-r lg:p-8">
+              <DialogHeader className="mb-8 space-y-2 text-left">
+                <DialogTitle className="text-3xl font-semibold tracking-tight text-foreground">
+                  Plan Your Trip
+                </DialogTitle>
+                <DialogDescription className="text-base text-muted-foreground">
+                  {selectedDestinationsForSetup.length} destinations selected
+                </DialogDescription>
+              </DialogHeader>
+
+              <section className="mb-8">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Selected Places
+                  </h3>
+                  {selectedDestinationsForSetup.length > 0 && (
+                    <Badge variant="secondary" className="rounded-full px-3 py-1">
+                      {selectedDestinationsForSetup.length} selected
+                    </Badge>
+                  )}
+                </div>
+                {selectedPlacesWithImages.length === 0 ? (
+                  <div className="rounded-3xl border border-dashed border-border bg-card/70 p-6 text-center text-sm text-muted-foreground">
+                    No destinations selected yet.
+                  </div>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {selectedPlacesWithImages.map((place) => (
+                      <div
+                        key={place.id}
+                        className="group flex items-center gap-3 rounded-3xl border border-border/70 bg-card/85 p-3 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md"
+                      >
+                        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-muted">
+                          {place.image ? (
+                            <img
+                              src={place.image}
+                              alt={place.name}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                              <MapPin className="h-4 w-4" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-foreground">{place.name}</p>
+                          <p className="truncate text-sm text-muted-foreground">
+                            {[place.state || place.city, place.country].filter(Boolean).join(", ")}
+                          </p>
+                        </div>
+                        <button
+                          className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          aria-label={`Remove ${place.name} from the trip setup`}
+                          onClick={() =>
+                            toggleSelection(place.id, {
+                              name: place.name,
+                              city: place.city,
+                              state: place.state,
+                              country: place.country,
+                              region: place.region,
+                              latitude: place.latitude,
+                              longitude: place.longitude,
+                              image: place.image,
+                              entryFee: place.entryFee,
+                            })
+                          }
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="mb-8 rounded-[1.75rem] border border-border/70 bg-card/80 p-5 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <CalendarDays className="h-5 w-5 text-primary" />
+                  <div>
+                    <h3 className="font-semibold text-foreground">Trip Duration</h3>
+                    <p className="text-sm text-muted-foreground">Choose your start and end dates</p>
+                  </div>
+                </div>
+                <div className="rounded-[1.5rem] border border-border/70 bg-background/88 p-3 sm:p-4">
+                  <div className="mb-3 rounded-2xl border border-border/70 bg-background px-4 py-3 shadow-sm">
+                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Selected dates</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">{dateInputLabel}</p>
+                  </div>
+                  <div className="overflow-hidden rounded-[1.25rem] border border-border/70 bg-card/70">
+                    <Calendar
+                      mode="range"
+                      numberOfMonths={isMobile ? 1 : 2}
+                      selected={tripDateRange}
+                      onSelect={(range) => {
+                        setTripDateRange(range)
+                        setTripSetupErrors((prev) => ({ ...prev, dates: undefined }))
+                      }}
+                      defaultMonth={tripDateRange?.from || new Date()}
+                      disabled={{ before: new Date(new Date().setHours(0, 0, 0, 0)) }}
+                      className="mx-auto w-full"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 rounded-2xl border border-primary/20 bg-primary/[0.06] px-4 py-3">
+                  <p className="text-sm font-medium text-foreground">
+                    {durationSummary
+                      ? `${format(tripDateRange?.from as Date, "MMM dd")} – ${format(tripDateRange?.to as Date, "MMM dd")} • ${durationSummary.totalDays} Days`
+                      : tripDateRange?.from
+                        ? "Select return date"
+                        : "Choose dates to see trip duration"}
+                  </p>
+                  {tripDateRange?.from && !tripDateRange?.to && (
+                    <p className="mt-1 text-sm text-muted-foreground">Select return date</p>
+                  )}
+                </div>
+                {tripSetupErrors.dates && (
+                  <p className="mt-3 text-sm text-destructive">{tripSetupErrors.dates}</p>
+                )}
+              </section>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <section className="rounded-[1.75rem] border border-border/70 bg-card/80 p-5 shadow-sm">
+                  <h3 className="mb-3 font-semibold text-foreground">Travel Style</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { value: "relaxed", label: "Relaxed" },
+                      { value: "balanced", label: "Balanced" },
+                      { value: "fast-paced", label: "Fast-paced" },
+                    ] as const).map((option) => (
+                      <button
+                        key={option.value}
+                        className={cn(
+                          "rounded-full border px-4 py-2 text-sm font-medium transition-all",
+                          travelStyle === option.value
+                            ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                            : "border-border bg-background hover:border-primary/40 hover:bg-primary/[0.04]"
+                        )}
+                        onClick={() => setTravelStyle(option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="rounded-[1.75rem] border border-border/70 bg-card/80 p-5 shadow-sm">
+                  <h3 className="mb-3 font-semibold text-foreground">Budget Preference</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { value: "budget", label: "Budget" },
+                      { value: "mid-range", label: "Mid-range" },
+                      { value: "luxury", label: "Luxury" },
+                    ] as const).map((option) => (
+                      <button
+                        key={option.value}
+                        className={cn(
+                          "rounded-full border px-4 py-2 text-sm font-medium transition-all",
+                          budgetPreference === option.value
+                            ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                            : "border-border bg-background hover:border-primary/40 hover:bg-primary/[0.04]"
+                        )}
+                        onClick={() => setBudgetPreference(option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  {tripSetupErrors.budgetPreference && (
+                    <p className="mt-3 text-sm text-destructive">{tripSetupErrors.budgetPreference}</p>
+                  )}
+                </section>
+              </div>
+
+              <section className="mt-5 rounded-[1.75rem] border border-border/70 bg-card/80 p-5 shadow-sm">
+                <Label htmlFor="starting-location" className="mb-3 block font-semibold text-foreground">
+                  Starting Location
+                </Label>
+                <Input
+                  id="starting-location"
+                  value={startingLocation}
+                  onChange={(e) => setStartingLocation(e.target.value)}
+                  placeholder="Enter your starting city"
+                  className="h-11 rounded-2xl border-border/70 bg-background/90"
+                />
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Optional, but it helps make your distance estimate more realistic.
+                </p>
+              </section>
+            </div>
+
+            <div className="overflow-y-auto border-t border-border/60 bg-[linear-gradient(180deg,rgba(239,246,255,0.88),rgba(255,255,255,0.96))] p-6 lg:border-l lg:border-t-0 lg:p-8">
+              <div className="rounded-[1.75rem] border border-primary/15 bg-white/90 p-5 shadow-lg shadow-blue-100/60">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="rounded-2xl bg-primary/10 p-3 text-primary">
+                    <MapPin className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-foreground">Estimated Travel Distance</h3>
+                    <p className="text-sm text-muted-foreground">Route preview across your selected stops</p>
+                  </div>
+                </div>
+                <p className="text-3xl font-semibold tracking-tight text-foreground">
+                  ~{tripDistancePreview.totalDistanceKm.toLocaleString()} km
+                </p>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {tripDistancePreview.routeNames.length > 1
+                    ? tripDistancePreview.routeNames.join(" → ")
+                    : tripDistancePreview.routeNames[0] || "Select destinations to preview your route"}
+                </p>
+                {durationSummary && durationSummary.totalDays > 0 && selectedDestinationsForSetup.length > 0 && durationSummary.totalDays / selectedDestinationsForSetup.length < 2 && (
+                  <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-700">
+                    Trip may be packed for the number of destinations selected.
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 rounded-[1.75rem] border border-border/70 bg-card/90 p-5 shadow-sm">
+                <Button
+                  className="h-12 w-full rounded-full text-base shadow-lg shadow-primary/20"
+                  onClick={handleEstimateBudget}
+                  disabled={!canEstimateBudget || isBudgetLoading}
+                >
+                  {isBudgetLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Preparing your budget page...
+                    </>
+                  ) : (
+                    "Estimate Budget"
+                  )}
+                </Button>
+                {!canEstimateBudget && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Select destinations and valid dates to continue.
+                  </p>
+                )}
+                {tripSetupErrors.destinations && (
+                  <p className="mt-3 text-sm text-destructive">{tripSetupErrors.destinations}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ChatBubble />
     </div>

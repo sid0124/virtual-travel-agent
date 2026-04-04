@@ -1,24 +1,28 @@
 "use client"
 
 import Link from "next/link"
+import { useEffect, useMemo, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Heart, Star, ExternalLink, Calendar, Users, Award } from "lucide-react"
+import { Heart, Star, ExternalLink, Calendar, Users, Award, CheckCircle2, Plus, X } from "lucide-react"
+import { buildDestinationImageUrl, destinationFallbackImage } from "@/lib/data"
 import { cn } from "@/lib/utils"
-import { useState } from "react"
 
 interface DestinationCardProps {
   id: string
   name: string
   country: string
   city?: string
+  state?: string
   image: string
+  imageFallback?: string
   description: string
   bestTime: string
   budget: { min: number; max: number; currency: string }
   rating: number
   interests: string[]
+  category?: string
   type?: string
   isUNESCO?: boolean
   annualVisitors?: number
@@ -33,12 +37,15 @@ export function DestinationCard({
   name,
   country,
   city,
+  state,
   image,
+  imageFallback,
   description,
   bestTime,
   budget,
   rating,
   interests,
+  category,
   type,
   isUNESCO,
   annualVisitors,
@@ -48,61 +55,58 @@ export function DestinationCard({
   onToggleSelection,
 }: DestinationCardProps) {
   const [isFavorite, setIsFavorite] = useState(false)
-  const [imgSrc, setImgSrc] = useState(image?.trim() ? image : "/placeholder.svg")
+  const locationParts = [city, state, country].filter(Boolean)
+  const fallbackImage = imageFallback || destinationFallbackImage
+  const autoImage = useMemo(
+    () =>
+      buildDestinationImageUrl({
+        name,
+        state,
+        city,
+        country,
+        category: category || type,
+      }),
+    [name, state, city, country, category, type]
+  )
+  const primaryImage = image?.trim() ? image : autoImage
+  const [imgSrc, setImgSrc] = useState(primaryImage)
+
+  useEffect(() => {
+    setImgSrc(primaryImage)
+  }, [primaryImage])
 
   return (
-    <Card className={cn("group overflow-hidden transition-all hover:shadow-lg", className)}>
-      <div className="relative aspect-[4/3] overflow-hidden">
-        {/*
-          Use raw <img> behavior for external URLs to avoid optimizer redirect issues.
-        */}
+    <Card
+      className={cn(
+        "group overflow-hidden rounded-2xl border border-border/70 bg-card/95 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl",
+        isSelected && "border-primary/70 bg-primary/[0.04] shadow-lg shadow-primary/10 ring-1 ring-primary/20",
+        className
+      )}
+    >
+      <div className="relative aspect-[16/9] overflow-hidden">
         <img
           src={imgSrc}
           alt={name}
-          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+          className="absolute inset-0 transition-transform duration-500 group-hover:scale-105"
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
           loading="lazy"
           referrerPolicy="no-referrer"
-          onError={() => {
-            setImgSrc("/placeholder.svg")
+          onError={(e) => {
+            if (imgSrc !== autoImage) {
+              setImgSrc(autoImage)
+              return
+            }
+
+            if (imgSrc !== fallbackImage) {
+              setImgSrc(fallbackImage)
+              e.currentTarget.src = fallbackImage
+            }
           }}
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-foreground/60 via-transparent to-transparent" />
-
-        {/* Toggle Selection Button */}
-        {onToggleSelection && (
-          <div className={cn(
-            "absolute inset-0 z-10 flex items-center justify-center bg-black/40 transition-opacity duration-300",
-            isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-          )}>
-            <Button
-              variant={isSelected ? "default" : "secondary"}
-              className={cn(
-                "font-semibold shadow-lg transition-transform hover:scale-105",
-                isSelected ? "bg-green-600 hover:bg-green-700 text-white" : ""
-              )}
-              onClick={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                onToggleSelection()
-              }}
-            >
-              {isSelected ? "Selected" : "Select"}
-            </Button>
-          </div>
-        )}
-
-        <button
-          onClick={() => setIsFavorite(!isFavorite)}
-          className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-card/80 backdrop-blur transition-colors hover:bg-card"
-          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
-        >
-          <Heart
-            className={cn(
-              "h-5 w-5 transition-colors",
-              isFavorite ? "fill-destructive text-destructive" : "text-foreground"
-            )}
-          />
-        </button>
+        <div className={cn(
+          "absolute inset-0 bg-gradient-to-t via-transparent to-transparent",
+          isSelected ? "from-primary/30" : "from-foreground/60"
+        )} />
 
         <div className="absolute left-3 top-3 flex flex-col gap-1.5">
           {isUNESCO && (
@@ -116,14 +120,48 @@ export function DestinationCard({
               Guest favorite
             </Badge>
           )}
+          {isSelected && (
+            <Badge className="gap-1 border-none bg-primary text-primary-foreground shadow-sm">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              In your plan
+            </Badge>
+          )}
+        </div>
+
+        <div className="absolute right-3 top-3 flex items-center gap-2">
+          {onToggleSelection && (
+            <button
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onToggleSelection()
+              }}
+              className={cn(
+                "flex h-10 w-10 items-center justify-center rounded-full border backdrop-blur transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+                isSelected
+                  ? "border-primary/50 bg-primary text-primary-foreground shadow-md"
+                  : "border-white/30 bg-black/25 text-white hover:bg-black/40"
+              )}
+              aria-label={isSelected ? `Remove ${name} from trip plan` : `Add ${name} to trip plan`}
+            >
+              {isSelected ? <X className="h-4.5 w-4.5" /> : <Plus className="h-4.5 w-4.5" />}
+            </button>
+          )}
+          <button
+            onClick={() => setIsFavorite(!isFavorite)}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-card/80 backdrop-blur transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          >
+            <Heart
+              className={cn(
+                "h-5 w-5 transition-colors",
+                isFavorite ? "fill-destructive text-destructive" : "text-foreground"
+              )}
+            />
+          </button>
         </div>
 
         <div className="absolute bottom-3 left-3 flex items-center gap-2">
-          {isSelected && (
-            <Badge className="bg-green-600 text-white hover:bg-green-600 border-none shadow-sm">
-              Selected
-            </Badge>
-          )}
           <div className="flex items-center gap-1 rounded-full bg-card/80 px-2 py-1 text-sm font-medium backdrop-blur">
             <Star className="h-4 w-4 fill-chart-4 text-chart-4" />
             {rating}
@@ -142,7 +180,7 @@ export function DestinationCard({
           <div>
             <h3 className="font-semibold text-foreground">{name}</h3>
             <p className="text-sm text-muted-foreground">
-              {city ? `${city}, ` : ""}{country}
+              {locationParts.join(", ")}
             </p>
           </div>
           <div className="text-right">
@@ -181,13 +219,32 @@ export function DestinationCard({
         </div>
 
         <div className="flex gap-2">
-          <Link href={`/chat?destination=${encodeURIComponent(name)}`} className="flex-1">
-            <Button className="w-full" size="sm">
-              Plan Trip
-            </Button>
-          </Link>
+          <Button
+            className={cn(
+              "flex-1 rounded-full",
+              isSelected
+                ? "bg-primary/10 text-primary hover:bg-primary/15"
+                : ""
+            )}
+            size="sm"
+            variant={isSelected ? "secondary" : "default"}
+            onClick={onToggleSelection}
+            aria-label={isSelected ? `Remove ${name} from trip plan` : `Add ${name} to trip plan`}
+          >
+            {isSelected ? (
+              <>
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                Selected
+              </>
+            ) : (
+              <>
+                <Plus className="mr-2 h-4 w-4" />
+                Add to plan
+              </>
+            )}
+          </Button>
           <Link href={`/weather?destination=${encodeURIComponent(city || name)}`}>
-            <Button variant="outline" size="sm" className="gap-1 bg-transparent">
+            <Button variant="outline" size="sm" className="gap-1 rounded-full bg-transparent">
               <ExternalLink className="h-4 w-4" />
             </Button>
           </Link>
