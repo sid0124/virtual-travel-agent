@@ -14,6 +14,7 @@ import { Calendar } from "@/components/ui/calendar"
 import { Slider } from "@/components/ui/slider"
 import { MapPin, CalendarIcon, Users, DollarSign, Search } from "lucide-react"
 import { format } from "date-fns"
+import { formatCurrency } from "@/lib/currency"
 import { cn } from "@/lib/utils"
 
 export function SearchForm() {
@@ -24,7 +25,7 @@ export function SearchForm() {
     to: undefined,
   })
   const [travelers, setTravelers] = useState(2)
-  const [budget, setBudget] = useState([1000, 5000])
+  const [budget, setBudget] = useState([10000, 50000])
 
   const handleSearch = () => {
     const params = new URLSearchParams({
@@ -145,7 +146,7 @@ export function SearchForm() {
               <div className="flex-1">
                 <Label className="text-xs font-medium text-muted-foreground">Budget</Label>
                 <p className="text-base font-medium">
-                  ${budget[0].toLocaleString()} - ${budget[1].toLocaleString()}
+                  {formatCurrency(budget[0])} - {formatCurrency(budget[1])}
                 </p>
               </div>
             </div>
@@ -153,19 +154,19 @@ export function SearchForm() {
           <PopoverContent className="w-72" align="start">
             <div className="space-y-4">
               <div>
-                <Label className="text-sm font-medium">Total Budget (USD)</Label>
+                <Label className="text-sm font-medium">Total Budget (INR)</Label>
                 <div className="mt-4 px-2">
                   <Slider
                     value={budget}
                     onValueChange={setBudget}
-                    min={100}
-                    max={20000}
-                    step={100}
+                    min={5000}
+                    max={300000}
+                    step={5000}
                   />
                 </div>
                 <div className="mt-2 flex justify-between text-sm text-muted-foreground">
-                  <span>${budget[0].toLocaleString()}</span>
-                  <span>${budget[1].toLocaleString()}</span>
+                  <span>{formatCurrency(budget[0])}</span>
+                  <span>{formatCurrency(budget[1])}</span>
                 </div>
               </div>
             </div>

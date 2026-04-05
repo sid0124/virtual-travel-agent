@@ -69,7 +69,7 @@ export default function ItineraryPage() {
   const [aiDraftItinerary, setAiDraftItinerary] = useState<AiPlannerResponse | null>(null)
   const [previousItinerarySnapshot, setPreviousItinerarySnapshot] = useState<TripPlan | null>(null)
   const [aiPlanHistory, setAiPlanHistory] = useState<Array<{ id: string; at: number; notes: string; issues: number }>>([])
-  const [currency, setCurrency] = useState("USD")
+  const [currency, setCurrency] = useState("INR")
   const [rates, setRates] = useState<Record<string, number>>({ USD: 1, EUR: 0.93, GBP: 0.79, JPY: 151.0, INR: 83.0 })
 
   useEffect(() => {
@@ -125,15 +125,15 @@ export default function ItineraryPage() {
 
   const days = plan?.itinerary.days || []
 
-  const convertCurrency = (amount: number, fromCurrency = "USD", toCurrency = currency) => {
+  const convertCurrency = (amount: number, fromCurrency = "INR", toCurrency = currency) => {
     const fromRate = rates[fromCurrency] || 1
     const toRate = rates[toCurrency] || 1
     const usdAmount = fromCurrency === "USD" ? amount : amount / fromRate
     return usdAmount * toRate
   }
 
-  const formatPrice = (amount: number, fromCurrency = "USD") =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency }).format(convertCurrency(amount, fromCurrency, currency))
+  const formatPrice = (amount: number, fromCurrency = "INR") =>
+    new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 }).format(convertCurrency(amount, fromCurrency, currency))
 
   const totalActivities = useMemo(
     () => days.reduce((sum, day) => sum + day.activities.length, 0),
@@ -143,17 +143,17 @@ export default function ItineraryPage() {
   const estimatedCost = useMemo(() => {
     if (!plan) return 0
     const activityCost = days.reduce(
-      (sum, day) => sum + day.activities.reduce((daySum, act) => daySum + convertCurrency(act.cost, act.currency || "USD", "USD"), 0),
+      (sum, day) => sum + day.activities.reduce((daySum, act) => daySum + convertCurrency(act.cost, act.currency || "INR", currency), 0),
       0
     )
 
     const hotelCost = Object.values(plan.bookings.hotelsByCity).reduce((sum, hotel) => {
       const nights = Math.max(1, Number(hotel.nights || 1))
-      return sum + convertCurrency(hotel.pricePerNight * nights, hotel.currency || "USD", "USD")
+      return sum + convertCurrency(hotel.pricePerNight * nights, hotel.currency || "INR", currency)
     }, 0)
 
     const flightCost = Object.values(plan.bookings.flightsBySegment).reduce((sum, flight) => {
-      return sum + convertCurrency(flight.price || 0, flight.currency || "USD", "USD")
+      return sum + convertCurrency(flight.price || 0, flight.currency || "INR", currency)
     }, 0)
 
     return activityCost + hotelCost + flightCost
@@ -246,7 +246,7 @@ export default function ItineraryPage() {
             time: "17:00",
             locationLabel: d.city,
             cost: 0,
-            currency: "USD",
+            currency: "INR",
           },
         ],
       }
@@ -279,7 +279,7 @@ export default function ItineraryPage() {
           time: "10:00",
           locationLabel: last.city,
           cost: 0,
-          currency: "USD",
+          currency: "INR",
         },
       ],
     }
@@ -483,7 +483,7 @@ export default function ItineraryPage() {
                                 {day.activities.length} activities
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                {formatPrice(day.activities.reduce((sum, a) => sum + convertCurrency(a.cost, a.currency || "USD", "USD"), 0), "USD")} total
+                                {formatPrice(day.activities.reduce((sum, a) => sum + convertCurrency(a.cost, a.currency || "INR", currency), 0), currency)} total
                               </p>
                             </div>
                             <ChevronDown
@@ -563,7 +563,7 @@ export default function ItineraryPage() {
                                             <span className="flex items-center gap-1">
                                               <DollarSign className="h-3 w-3" />
                                               {activity.cost > 0
-                                                ? formatPrice(activity.cost, activity.currency || "USD")
+                                                ? formatPrice(activity.cost, activity.currency || "INR")
                                                 : "Free"}
                                             </span>
                                           </div>
@@ -635,7 +635,7 @@ export default function ItineraryPage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Estimated Cost</span>
-                  <span className="font-medium text-foreground">{formatPrice(estimatedCost, "USD")}</span>
+                  <span className="font-medium text-foreground">{formatPrice(estimatedCost, currency)}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>Hotels booked</span>

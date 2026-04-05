@@ -160,7 +160,7 @@ function buildHotelsByCity(
       id: String(hotel.id || `${normalizedCityKey}-hotel`),
       name: String(hotel.name || `${cityKey} Hotel`),
       pricePerNight: safeNumber(hotel.pricePerNight ?? hotel.price, 0),
-      currency: String(hotel.currency || "USD"),
+      currency: String(hotel.currency || "INR"),
       address: hotel.address ?? null,
       imageUrl: hotel.imageUrl ?? null,
       rating: typeof hotel.rating === "number" ? hotel.rating : null,
@@ -186,7 +186,7 @@ function buildFlightsBySegment(
       departTime: normalizeTime(f.departure || f.departTime, "09:00"),
       arriveTime: normalizeTime(f.arrival || f.arriveTime, "11:30"),
       price: safeNumber(f.priceTotal ?? f.price, 0),
-      currency: String(f.currency || "USD"),
+      currency: String(f.currency || "INR"),
       stops: typeof f.stops === "number" || typeof f.stops === "string" ? f.stops : undefined,
       duration: typeof f.duration === "string" ? f.duration : undefined,
       from: f.from,
@@ -244,7 +244,7 @@ function generateItineraryDays(input: BuildTripPlanInput, hotelsByCity: Record<s
         time: firstFlight?.arriveTime || "09:00",
         locationLabel: city,
         cost: 0,
-        currency: "USD",
+        currency: "INR",
         meta: firstFlight ? { flightId: firstFlight.id } : undefined,
       })
 
@@ -273,7 +273,7 @@ function generateItineraryDays(input: BuildTripPlanInput, hotelsByCity: Record<s
         time: flight?.departTime || "09:00",
         locationLabel: `${previousCity} -> ${city}`,
         cost: 0,
-        currency: flight?.currency || "USD",
+        currency: flight?.currency || "INR",
         meta: flight ? { flightId: flight.id } : undefined,
       })
 
@@ -305,7 +305,7 @@ function generateItineraryDays(input: BuildTripPlanInput, hotelsByCity: Record<s
         time,
         locationLabel: `${place.city}${place.country ? `, ${place.country}` : ""}`,
         cost: safeNumber(place.entryFee, 0),
-        currency: "USD",
+        currency: "INR",
         meta: { placeId: place.name },
       })
     }
@@ -317,7 +317,7 @@ function generateItineraryDays(input: BuildTripPlanInput, hotelsByCity: Record<s
       time: "19:00",
       locationLabel: city,
       cost: foodCost,
-      currency: "USD",
+      currency: "INR",
     })
 
     if (dayNumber === daysCount) {
@@ -633,7 +633,7 @@ function makeActivityFromPayload(dayNumber: number, payload: TripEditPayload | n
   const time = normalizeTime(payload?.time, "14:00")
   const locationLabel = String(payload?.locationLabel || "New York City")
   const cost = safeNumber(payload?.cost, 0)
-  const currency = String(payload?.currency || "USD")
+  const currency = String(payload?.currency || "INR")
   const id = String(payload?.id || fallbackId || `ai-d${dayNumber}-activity-${time}`)
   const meta =
     payload?.meta && typeof payload.meta === "object"
@@ -817,7 +817,7 @@ export function applyStructuredOptimizationResponse(
         time,
         locationLabel: String(raw?.locationLabel || raw?.location || existingDay.city),
         cost: safeNumber(raw?.cost ?? raw?.estimated_cost, 0),
-        currency: String(raw?.currency || "USD"),
+        currency: String(raw?.currency || "INR"),
         durationMinutes,
         isOptional: Boolean(raw?.isOptional),
         aiNotes: String(raw?.aiNotes || raw?.notes || ""),

@@ -59,7 +59,7 @@ function AuthButtons() {
 const navItems = [
   { href: "/", label: "Home", icon: Plane },
   { href: "/destinations", label: "Destinations", icon: MapPin },
-  { href: "/chat", label: "AI Assistant", icon: MessageSquare },
+  { href: "/ai-assistant", label: "AI Assistant", icon: MessageSquare },
   { href: "/itinerary", label: "Itinerary", icon: Calendar },
   { href: "/budget", label: "Budget", icon: Wallet },
   { href: "/booking", label: "Booking", icon: Hotel },

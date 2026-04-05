@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { clampLimit, isRapidApiConfigured, searchHotels } from "@/lib/rapidapi-hotels"
+import { convertCurrencyValue, DEFAULT_CURRENCY } from "@/lib/currency"
 import { generateDemoHotels } from "@/lib/demo-inventory"
 
 export const runtime = "nodejs"
@@ -35,8 +36,8 @@ function buildDemoHotelsPage(city: string, budgetLevel: string, page: number, li
     country: h.country || "",
     rating: h.rating ?? null,
     reviewCount: h.reviews ?? null,
-    pricePerNight: h.price ?? null,
-    currency: "USD",
+    pricePerNight: h.price != null ? convertCurrencyValue(h.price, "USD", DEFAULT_CURRENCY, 50) : null,
+    currency: DEFAULT_CURRENCY,
     imageUrl: h.image || "/placeholder.svg",
     address: null,
     amenities: h.amenities || ["wifi"],
@@ -133,7 +134,14 @@ export async function GET(req: Request) {
       limit,
       total: response.total,
       hasMore: response.hasMore,
-      hotels: response.hotels,
+      hotels: response.hotels.map((hotel) => ({
+        ...hotel,
+        pricePerNight:
+          typeof hotel.pricePerNight === "number"
+            ? convertCurrencyValue(hotel.pricePerNight, hotel.currency || "USD", DEFAULT_CURRENCY, 50)
+            : hotel.pricePerNight,
+        currency: DEFAULT_CURRENCY,
+      })),
     })
   } catch (error: any) {
     const { searchParams } = new URL(req.url)

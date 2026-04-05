@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { amadeusGet, isAmadeusConfigured, resolveCityCode } from "@/lib/amadeus"
 import { getCache, setCache } from "@/lib/api-cache"
+import { convertCurrencyValue, DEFAULT_CURRENCY } from "@/lib/currency"
 import { generateDemoHotels } from "@/lib/demo-inventory"
 
 const HOTELS_TTL_MS = 15 * 60 * 1000
@@ -13,6 +14,7 @@ type LiveHotel = {
   rating: number
   reviews: number
   price: number
+  currency: string
   amenities: string[]
   hotelType: string
   image: string
@@ -47,7 +49,8 @@ function normalizeHotels(
       country,
       rating: Number.isFinite(rating) ? rating : 4.0,
       reviews: 150 + (idx % 500),
-      price: Number.isFinite(price) && price > 0 ? price : 120 + (idx % 200),
+      price: convertCurrencyValue(Number.isFinite(price) && price > 0 ? price : 120 + (idx % 200), "USD", DEFAULT_CURRENCY, 50),
+      currency: DEFAULT_CURRENCY,
       amenities,
       hotelType: firstRoom?.typeEstimated?.category || "Hotel",
       image: "/placeholder.svg",
@@ -168,6 +171,8 @@ export async function GET(req: Request) {
       const topUpCount = Math.max(0, inventoryTarget - hotels.length)
       const demoTopUp = generateDemoHotels(city, country, topUpCount, budgetLevel).map((h) => ({
         ...h,
+        price: convertCurrencyValue(h.price, "USD", DEFAULT_CURRENCY, 50),
+        currency: DEFAULT_CURRENCY,
       }))
       hotels = [...hotels, ...demoTopUp]
       if (mode === "LIVE") {

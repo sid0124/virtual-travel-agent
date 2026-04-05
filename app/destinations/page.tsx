@@ -44,7 +44,10 @@ import {
 } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { destinationFallbackImage, destinations, ensureDestinationImage, interestTags } from "@/lib/data"
+import { formatCurrency, formatPriceRange, USD_TO_INR } from "@/lib/currency"
 import {
+  buildBudgetEstimate,
+  convertBudgetEstimateCurrency,
   defaultTripSetupState,
   type BudgetPreference,
   estimateTravelDistance,
@@ -53,10 +56,49 @@ import {
   TRIP_SETUP_STORAGE_KEY,
   type TravelStyle,
 } from "@/lib/trip-budget"
-import { cn } from "@/lib/utils"
+import { cn, calculateDistance } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
 
+const DistanceCard = ({ distance, routeText }: { distance: number, routeText?: string }) => (
+  <div className="rounded-[1.75rem] border border-primary/15 bg-white/90 p-5 shadow-lg shadow-blue-100/60 mt-5">
+    <div className="mb-4 flex items-center gap-3">
+      <div className="rounded-2xl bg-primary/10 p-3 text-primary">
+        <MapPin className="h-5 w-5" />
+      </div>
+      <div>
+        <h3 className="font-semibold text-foreground">Estimated Travel Distance</h3>
+        <p className="text-sm text-muted-foreground">Global route calculation</p>
+      </div>
+    </div>
+    <p className="text-3xl font-semibold tracking-tight text-foreground">
+      {distance > 1000 ? `${(distance / 1000).toFixed(1)}k km` : `${distance} km`}
+    </p>
+    {routeText && <p className="mt-3 text-sm font-medium text-muted-foreground">{routeText}</p>}
+  </div>
+)
+
+const BudgetCardPlaceholder = () => (
+  <div className="rounded-[1.75rem] border border-emerald-500/15 bg-white/90 p-5 shadow-lg shadow-emerald-100/60 mt-5">
+    <div className="mb-2 flex items-center gap-3">
+      <div className="rounded-2xl bg-emerald-500/10 p-3 text-emerald-600">
+        <Award className="h-5 w-5" />
+      </div>
+      <div>
+        <h3 className="font-semibold text-foreground">Budget Ready</h3>
+      </div>
+    </div>
+    <p className="text-sm text-muted-foreground">Your travel details are fully verified. Tap below to generate global live pricing.</p>
+  </div>
+)
+
 const DESTINATION_IMAGE_CACHE_KEY = "destination-image-cache:v1"
+const budgetLoadingMessages = [
+  "Checking flight prices...",
+  "Scanning hotel rates...",
+  "Estimating food costs...",
+  "Mapping local travel...",
+  "Building your budget dashboard...",
+]
 
 const countryAliases: Record<string, string[]> = {
   usa: ["united states", "united states of america", "america", "us"],
@@ -143,7 +185,7 @@ export default function DestinationsPage() {
   const isMobile = useIsMobile()
 
   const [searchQuery, setSearchQuery] = useState("")
-  const [budgetRange, setBudgetRange] = useState([0, 500])
+  const [budgetRange, setBudgetRange] = useState([0, 50000])
   const [selectedInterests, setSelectedInterests] = useState<string[]>([])
   const [selectedRegion, setSelectedRegion] = useState("All Regions")
   const [selectedState, setSelectedState] = useState("All States")
@@ -165,7 +207,30 @@ export default function DestinationsPage() {
     tripSetup.budgetPreference || defaultTripSetupState.budgetPreference
   )
   const [startingLocation, setStartingLocation] = useState(tripSetup.startingLocation || "")
+  const [people, setPeople] = useState(tripSetup.travelers || 1)
+  const [startingLocationData, setStartingLocationData] = useState<any>(null)
+  
+  useEffect(() => {
+    if (!startingLocation || startingLocation.trim().length === 0) {
+      setStartingLocationData(null)
+      return
+    }
+    const timer = setTimeout(() => {
+       fetch(`/api/geocode?q=${encodeURIComponent(startingLocation)}`)
+         .then((r) => r.json())
+         .then((data) => {
+            if (data.lat && data.lng) {
+               setStartingLocationData({ name: startingLocation, lat: data.lat, lon: data.lng })
+            } else {
+               setStartingLocationData(null)
+            }
+         })
+         .catch(() => setStartingLocationData(null))
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [startingLocation])
   const [isBudgetLoading, setIsBudgetLoading] = useState(false)
+  const [budgetLoadingMessageIndex, setBudgetLoadingMessageIndex] = useState(0)
   const [tripSetupErrors, setTripSetupErrors] = useState<{
     destinations?: string
     dates?: string
@@ -251,6 +316,21 @@ export default function DestinationsPage() {
       JSON.stringify(resolvedImages)
     )
   }, [resolvedImages])
+
+  useEffect(() => {
+    if (!isBudgetLoading) {
+      setBudgetLoadingMessageIndex(0)
+      return
+    }
+
+    const interval = window.setInterval(() => {
+      setBudgetLoadingMessageIndex((current) =>
+        current >= budgetLoadingMessages.length - 1 ? current : current + 1
+      )
+    }, 1200)
+
+    return () => window.clearInterval(interval)
+  }, [isBudgetLoading])
 
   const buildSelectedPlace = (
     id: string,
@@ -370,7 +450,7 @@ export default function DestinationsPage() {
 
   const clearFilters = () => {
     setSearchQuery("")
-    setBudgetRange([0, 500])
+    setBudgetRange([0, 50000])
     setSelectedInterests([])
     setSelectedRegion("All Regions")
     setSelectedState("All States")
@@ -436,16 +516,48 @@ export default function DestinationsPage() {
     })
   }, [tripDateRange])
 
-  const tripDistancePreview = useMemo(
-    () => estimateTravelDistance(selectedDestinationsForSetup),
-    [selectedDestinationsForSetup]
-  )
+  const tripDistancePreview = useMemo(() => {
+    if (!startingLocationData || selectedDestinationsForSetup.length === 0) {
+      return { totalDistanceKm: 0, routeNames: [] };
+    }
 
-  const canEstimateBudget =
+    const formattedDestinations = selectedDestinationsForSetup.map(p => ({
+      ...p,
+      lat: Number(p.latitude),
+      lon: Number(p.longitude)
+    }));
+
+    if (
+      !startingLocationData.lat ||
+      !startingLocationData.lon ||
+      formattedDestinations.some(p => !p.lat || !p.lon)
+    ) {
+      console.error("Invalid coordinates detected:", startingLocationData, formattedDestinations);
+      return { totalDistanceKm: 0, routeNames: [] };
+    }
+
+    console.log("START LOCATION:", startingLocationData);
+    console.log("DESTINATIONS:", formattedDestinations);
+
+    return {
+      totalDistanceKm: calculateDistance(startingLocationData, formattedDestinations),
+      routeNames: [startingLocationData.name, ...formattedDestinations.map(d => d.name)]
+    }
+  }, [selectedDestinationsForSetup, startingLocationData])
+
+  const totalDistance = tripDistancePreview.totalDistanceKm;
+
+  const isValid =
+    Boolean(startingLocationData) &&
     selectedDestinationsForSetup.length > 0 &&
+    totalDistance > 0 &&
+    people > 0 &&
     Boolean(tripDateRange?.from) &&
-    Boolean(tripDateRange?.to) &&
-    Boolean(budgetPreference)
+    Boolean(tripDateRange?.to);
+
+  const canShowBudget =
+    isValid &&
+    Boolean(budgetPreference);
 
   const handleEstimateBudget = async () => {
     const nextErrors: typeof tripSetupErrors = {}
@@ -466,6 +578,11 @@ export default function DestinationsPage() {
       return
     }
 
+    if (people < 1) {
+      toast.error("Please enter a valid number of travellers.")
+      return
+    }
+
     setIsBudgetLoading(true)
     const confirmedFrom = tripDateRange?.from
     const confirmedTo = tripDateRange?.to
@@ -483,6 +600,7 @@ export default function DestinationsPage() {
       travelStyle,
       budgetPreference,
       startingLocation,
+      travelers: people,
     }
 
     setTripSetup(nextTripSetup)
@@ -507,11 +625,27 @@ export default function DestinationsPage() {
       })
     )
 
-    setTimeout(() => {
+    try {
+      const response = await fetch("/api/budget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextTripSetup),
+      })
+
+      if (!response.ok) {
+        throw new Error("Budget API request failed")
+      }
+
+      const estimate = await response.json()
+      setBudgetEstimate(estimate)
+    } catch {
+      setBudgetEstimate(convertBudgetEstimateCurrency(buildBudgetEstimate(nextTripSetup), "INR", USD_TO_INR))
+      toast.error("Live pricing is unavailable right now. Showing a smart fallback estimate instead.")
+    } finally {
       setIsBudgetLoading(false)
       setIsTripSetupOpen(false)
       router.push("/budget")
-    }, 700)
+    }
   }
 
   const dateInputLabel = tripDateRange?.from
@@ -692,7 +826,7 @@ export default function DestinationsPage() {
 
   const activeFiltersCount =
     (searchQuery ? 1 : 0) +
-    (budgetRange[0] > 0 || budgetRange[1] < 500 ? 1 : 0) +
+    (budgetRange[0] > 0 || budgetRange[1] < 50000 ? 1 : 0) +
     selectedInterests.length +
     (selectedRegion !== "All Regions" ? 1 : 0) +
     (selectedState !== "All States" ? 1 : 0) +
@@ -702,17 +836,17 @@ export default function DestinationsPage() {
   const FilterContent = () => (
     <div className="space-y-6">
       <div>
-        <Label className="mb-4 block text-sm font-medium">Daily Budget (USD)</Label>
+        <Label className="mb-4 block text-sm font-medium">Daily Budget (INR)</Label>
         <Slider
           value={budgetRange}
           onValueChange={setBudgetRange}
           min={0}
-          max={500}
-          step={10}
+          max={50000}
+          step={500}
         />
         <div className="mt-2 flex justify-between text-sm text-muted-foreground">
-          <span>${budgetRange[0]}</span>
-          <span>${budgetRange[1]}+</span>
+          <span>{formatCurrency(budgetRange[0])}</span>
+          <span>{formatCurrency(budgetRange[1])}+</span>
         </div>
       </div>
 
@@ -1045,10 +1179,10 @@ export default function DestinationsPage() {
                     <X className="h-3 w-3 cursor-pointer" onClick={() => setSearchQuery("")} />
                   </Badge>
                 )}
-                {(budgetRange[0] > 0 || budgetRange[1] < 500) && (
+                {(budgetRange[0] > 0 || budgetRange[1] < 50000) && (
                   <Badge variant="secondary" className="gap-1">
-                    ${budgetRange[0]} - ${budgetRange[1]}
-                    <X className="h-3 w-3 cursor-pointer" onClick={() => setBudgetRange([0, 500])} />
+                    {formatPriceRange(budgetRange[0], budgetRange[1])}
+                    <X className="h-3 w-3 cursor-pointer" onClick={() => setBudgetRange([0, 50000])} />
                   </Badge>
                 )}
                 {selectedRegion !== "All Regions" && (
@@ -1324,58 +1458,71 @@ export default function DestinationsPage() {
                   placeholder="Enter your starting city"
                   className="h-11 rounded-2xl border-border/70 bg-background/90"
                 />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Optional, but it helps make your distance estimate more realistic.
+                
+                <Label htmlFor="people" className="mb-3 mt-5 block font-semibold text-foreground">
+                  Number of People
+                </Label>
+                <Input
+                  id="people"
+                  type="number"
+                  min="1"
+                  value={people || ""}
+                  onChange={(e) => setPeople(Number(e.target.value))}
+                  placeholder="Enter number of travellers"
+                  className="h-11 rounded-2xl border-border/70 bg-background/90"
+                />
+                
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Adding your exact travel party and starting origin gives you highly precise budget metrics natively calculating shared multi-person layouts perfectly.
                 </p>
               </section>
             </div>
 
             <div className="overflow-y-auto border-t border-border/60 bg-[linear-gradient(180deg,rgba(239,246,255,0.88),rgba(255,255,255,0.96))] p-6 lg:border-l lg:border-t-0 lg:p-8">
-              <div className="rounded-[1.75rem] border border-primary/15 bg-white/90 p-5 shadow-lg shadow-blue-100/60">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="rounded-2xl bg-primary/10 p-3 text-primary">
-                    <MapPin className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-foreground">Estimated Travel Distance</h3>
-                    <p className="text-sm text-muted-foreground">Route preview across your selected stops</p>
-                  </div>
+              
+              {!startingLocationData && (
+                <div className="mt-4 rounded-xl bg-orange-50 px-4 py-3 text-sm text-orange-700">
+                  <p>Select starting location</p>
                 </div>
-                <p className="text-3xl font-semibold tracking-tight text-foreground">
-                  ~{tripDistancePreview.totalDistanceKm.toLocaleString()} km
+              )}
+
+              {(!people || people < 1) && (
+                <div className="mt-4 rounded-xl bg-orange-50 px-4 py-3 text-sm text-orange-700">
+                  <p>Please enter number of travellers</p>
+                </div>
+              )}
+
+              {startingLocationData && selectedDestinationsForSetup.length === 0 && (
+                <div className="mt-4 rounded-xl bg-orange-50 px-4 py-3 text-sm text-orange-700">
+                  <p>Select at least one destination</p>
+                </div>
+              )}
+
+              {isValid && <DistanceCard distance={totalDistance} routeText={tripDistancePreview.routeNames.join(" → ")} />}
+              
+              {canShowBudget ? (
+                <BudgetCardPlaceholder />
+              ) : (
+                <p className="text-muted-foreground mt-4 text-sm px-2 text-center">
+                  Complete trip details to estimate budget
                 </p>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  {tripDistancePreview.routeNames.length > 1
-                    ? tripDistancePreview.routeNames.join(" → ")
-                    : tripDistancePreview.routeNames[0] || "Select destinations to preview your route"}
-                </p>
-                {durationSummary && durationSummary.totalDays > 0 && selectedDestinationsForSetup.length > 0 && durationSummary.totalDays / selectedDestinationsForSetup.length < 2 && (
-                  <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-700">
-                    Trip may be packed for the number of destinations selected.
-                  </div>
-                )}
-              </div>
+              )}
 
               <div className="mt-5 rounded-[1.75rem] border border-border/70 bg-card/90 p-5 shadow-sm">
                 <Button
                   className="h-12 w-full rounded-full text-base shadow-lg shadow-primary/20"
                   onClick={handleEstimateBudget}
-                  disabled={!canEstimateBudget || isBudgetLoading}
+                  disabled={!canShowBudget || isBudgetLoading}
                 >
                   {isBudgetLoading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Preparing your budget page...
+                      {budgetLoadingMessages[budgetLoadingMessageIndex]}
                     </>
                   ) : (
                     "Estimate Budget"
                   )}
                 </Button>
-                {!canEstimateBudget && (
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    Select destinations and valid dates to continue.
-                  </p>
-                )}
                 {tripSetupErrors.destinations && (
                   <p className="mt-3 text-sm text-destructive">{tripSetupErrors.destinations}</p>
                 )}

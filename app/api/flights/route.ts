@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { amadeusGet, isAmadeusConfigured, resolveAirportCode } from "@/lib/amadeus"
 import { getCache, setCache } from "@/lib/api-cache"
+import { convertCurrencyValue, DEFAULT_CURRENCY } from "@/lib/currency"
 import { generateDemoFlights } from "@/lib/demo-inventory"
 
 const FLIGHTS_TTL_MS = 10 * 60 * 1000
@@ -108,7 +109,7 @@ export async function GET(req: Request) {
           returnDate,
           adults,
           travelClass: mapBudgetToTravelClass(budgetLevel),
-          currencyCode: "USD",
+          currencyCode: DEFAULT_CURRENCY,
         })
 
         flights = (res.data || []).map((offer) => {
@@ -127,8 +128,8 @@ export async function GET(req: Request) {
             arrival: isoToTime(lastSegment?.arrival?.at),
             duration: formatDuration(firstItinerary?.duration || "PT0M"),
             durationMinutes: durationMinutes(firstItinerary?.duration || "PT0M"),
-            price: Number.isFinite(totalPrice) ? totalPrice : 0,
-            currency: offer.price?.currency || "USD",
+            price: convertCurrencyValue(Number.isFinite(totalPrice) ? totalPrice : 0, offer.price?.currency || "USD", DEFAULT_CURRENCY, 50),
+            currency: DEFAULT_CURRENCY,
             class: mapBudgetToTravelClass(budgetLevel).replace("_", " "),
             stops: Math.max(0, segments.length - 1),
             isDemo: false,
@@ -147,7 +148,8 @@ export async function GET(req: Request) {
     if (mode === "DEMO") {
       flights = generateDemoFlights(originCity, destinationCity, departDate, adults, budgetLevel, 10).map((f) => ({
         ...f,
-        currency: "USD",
+        price: convertCurrencyValue(f.price, "USD", DEFAULT_CURRENCY, 50),
+        currency: DEFAULT_CURRENCY,
         durationMinutes: Number((f.duration.match(/(\d+)h/)?.[1] || 0)) * 60 + Number((f.duration.match(/(\d+)m/)?.[1] || 0)),
       }))
       if (!message) {
@@ -203,7 +205,8 @@ export async function GET(req: Request) {
     const message = error?.message || "Failed to fetch flights"
     const demo = generateDemoFlights(originCity || "Origin", destinationCity || "Destination", departDate || new Date().toISOString().slice(0, 10), adults, budgetLevel, 10).map((f) => ({
       ...f,
-      currency: "USD",
+      price: convertCurrencyValue(f.price, "USD", DEFAULT_CURRENCY, 50),
+      currency: DEFAULT_CURRENCY,
       durationMinutes: Number((f.duration.match(/(\\d+)h/)?.[1] || 0)) * 60 + Number((f.duration.match(/(\\d+)m/)?.[1] || 0)),
     }))
 

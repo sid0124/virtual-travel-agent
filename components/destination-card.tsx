@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Heart, Star, ExternalLink, Calendar, Users, Award, CheckCircle2, Plus, X } from "lucide-react"
 import { buildDestinationImageUrl, destinationFallbackImage } from "@/lib/data"
+import { formatCurrency, formatPriceRange } from "@/lib/currency"
 import { cn } from "@/lib/utils"
 
 interface DestinationCardProps {
@@ -185,7 +186,7 @@ export function DestinationCard({
           </div>
           <div className="text-right">
             <p className="text-sm font-medium text-foreground">
-              ${budget.min} - ${budget.max}
+              {formatPriceRange(budget.min, budget.max, budget.currency)}
             </p>
             <p className="text-xs text-muted-foreground">per day</p>
           </div>
@@ -206,7 +207,7 @@ export function DestinationCard({
 
         {entryFee !== undefined && (
           <p className="mb-3 text-xs text-muted-foreground">
-            Entry fee: {entryFee === 0 ? "Free" : `$${entryFee}`}
+            Entry fee: {entryFee === 0 ? "Free" : formatCurrency(entryFee)}
           </p>
         )}
 

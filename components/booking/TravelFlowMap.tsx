@@ -47,10 +47,10 @@ export function TravelFlowMap({ route, activeDestination, segments }: TravelFlow
               {idx < route.length - 1 && (
                 <div className="mx-2 flex w-36 flex-col items-center">
                   <div className={cn("h-1 w-24 rounded-full", segments[idx] && segments[idx].to === activeDestination ? "bg-primary" : "bg-muted")} />
-                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground" title="Estimated based on geolocation data">
                     <Plane className="h-3 w-3" />
                     <span>
-                      {segments[idx]?.distanceKm ? `${Math.round(segments[idx].distanceKm)} km` : "Distance n/a"}
+                      {segments[idx]?.distanceKm ? `~${Math.round(segments[idx].distanceKm as number).toLocaleString()} km` : "Distance n/a"}
                     </span>
                   </div>
                   <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">

@@ -1,5 +1,6 @@
 import { differenceInCalendarDays } from "date-fns"
 
+import { convertUsdToInr, DEFAULT_CURRENCY } from "@/lib/currency"
 import { budgetEstimates, destinations, hotels } from "@/lib/data"
 
 export type BudgetPreference = "budget" | "mid-range" | "luxury"
@@ -32,6 +33,7 @@ export type TripSetupState = {
   travelStyle: TravelStyle
   budgetPreference: BudgetPreference
   startingLocation: string
+  travelers: number
 }
 
 export type RouteStop = {
@@ -45,6 +47,19 @@ export type BudgetBreakdown = {
   food: number
   travel: number
   activities: number
+}
+
+export type BudgetRange = {
+  min: number
+  max: number
+}
+
+export type BudgetEstimateQuality = "live" | "mixed" | "fallback"
+
+export type BudgetComponentStatus = {
+  mode: BudgetEstimateQuality
+  source: string
+  message: string
 }
 
 export type DestinationBudgetDetail = {
@@ -61,10 +76,15 @@ export type DestinationBudgetDetail = {
   flightEstimate: number
   totalEstimate: number
   pricingSource: string
+  averageDailyCost?: number
+  hotelSource?: string
+  foodSource?: string
+  travelSource?: string
 }
 
 export type TripBudgetEstimate = {
   totalBudget: number
+  totalBudgetRange: BudgetRange
   perDayCost: number
   travelCost: number
   totalDays: number
@@ -81,6 +101,17 @@ export type TripBudgetEstimate = {
   averageHotelPerNight: number
   destinationDetails: DestinationBudgetDetail[]
   pricingNotes: string[]
+  currency: string
+  activitiesBuffer: number
+  estimateQuality: BudgetEstimateQuality
+  sourceAttribution: string[]
+  componentStatus: {
+    flights: BudgetComponentStatus
+    hotels: BudgetComponentStatus
+    food: BudgetComponentStatus
+    localTravel: BudgetComponentStatus
+  }
+  fetchedAt: string
 }
 
 export const TRIP_SETUP_STORAGE_KEY = "WANDERLY_TRIP_SETUP"
@@ -174,6 +205,7 @@ export const defaultTripSetupState: TripSetupState = {
   travelStyle: "balanced",
   budgetPreference: "mid-range",
   startingLocation: "",
+  travelers: 1,
 }
 
 export function normalizeSelectedDestination(input: Partial<SelectedDestination>): SelectedDestination | null {
@@ -272,7 +304,15 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function getRegionBaseline(destination: SelectedDestination, preference: BudgetPreference) {
-  return regionDailyBaselines[destination.region || ""]?.[preference] || fallbackBaseline[preference]
+  const raw = regionDailyBaselines[destination.region || ""]?.[preference] || fallbackBaseline[preference]
+  return {
+    total: convertUsdToInr(raw.total),
+    hotel: convertUsdToInr(raw.hotel),
+    food: convertUsdToInr(raw.food, 10),
+    local: convertUsdToInr(raw.local, 10),
+    activity: convertUsdToInr(raw.activity, 10),
+    flight: convertUsdToInr(raw.flight),
+  }
 }
 
 function getDestinationDailyBase(destination: SelectedDestination, preference: BudgetPreference) {
@@ -479,7 +519,7 @@ function estimateArrivalFlightCost(
   }
 
   if (isSameLocation(startContext.state, firstDestination.state) && isSameLocation(startContext.country, firstDestination.country)) {
-    return Math.round(28 * multiplier)
+    return Math.round(convertUsdToInr(28, 10) * multiplier)
   }
 
   if (isSameLocation(startContext.country, firstDestination.country)) {
@@ -497,20 +537,20 @@ function estimateLegTransferCost(distanceKm: number, preference: BudgetPreferenc
   if (distanceKm <= 0) return 0
 
   if (distanceKm < 100) {
-    return Math.round(preference === "budget" ? 12 + distanceKm * 0.08 : preference === "luxury" ? 38 + distanceKm * 0.18 : 22 + distanceKm * 0.12)
+    return convertUsdToInr(preference === "budget" ? 12 + distanceKm * 0.08 : preference === "luxury" ? 38 + distanceKm * 0.18 : 22 + distanceKm * 0.12, 10)
   }
 
   if (distanceKm < 350) {
-    return Math.round(distanceKm * (preference === "budget" ? 0.11 : preference === "luxury" ? 0.28 : 0.18))
+    return convertUsdToInr(distanceKm * (preference === "budget" ? 0.11 : preference === "luxury" ? 0.28 : 0.18), 10)
   }
 
   if (distanceKm < 900) {
-    return Math.round(distanceKm * (preference === "budget" ? 0.15 : preference === "luxury" ? 0.36 : 0.24))
+    return convertUsdToInr(distanceKm * (preference === "budget" ? 0.15 : preference === "luxury" ? 0.36 : 0.24), 10)
   }
 
   return Math.max(
-    preference === "budget" ? 110 : preference === "luxury" ? 320 : 190,
-    Math.round(distanceKm * (preference === "budget" ? 0.14 : preference === "luxury" ? 0.33 : 0.21))
+    convertUsdToInr(preference === "budget" ? 110 : preference === "luxury" ? 320 : 190),
+    convertUsdToInr(distanceKm * (preference === "budget" ? 0.14 : preference === "luxury" ? 0.33 : 0.21), 10)
   )
 }
 
@@ -709,6 +749,10 @@ export function buildBudgetEstimate(setup: TripSetupState): TripBudgetEstimate {
 
   return {
     totalBudget,
+    totalBudgetRange: {
+      min: Math.round(totalBudget * 0.9),
+      max: Math.round(totalBudget * 1.12),
+    },
     perDayCost: Math.round(totalBudget / Math.max(totalDays, 1)),
     travelCost,
     totalDays,
@@ -730,5 +774,82 @@ export function buildBudgetEstimate(setup: TripSetupState): TripBudgetEstimate {
     averageHotelPerNight,
     destinationDetails,
     pricingNotes,
+    currency: DEFAULT_CURRENCY,
+    activitiesBuffer: 0,
+    estimateQuality: "fallback",
+    sourceAttribution: ["Static Wanderly pricing dataset"],
+    componentStatus: {
+      flights: {
+        mode: "fallback",
+        source: "Regional flight heuristic",
+        message: "Flight estimate uses destination and regional baselines.",
+      },
+      hotels: {
+        mode: "fallback",
+        source: "Hotel dataset + regional bands",
+        message: "Hotel estimate blends hotel records with destination pricing.",
+      },
+      food: {
+        mode: "fallback",
+        source: "Destination food ranges",
+        message: "Food estimate uses regional and destination spending bands.",
+      },
+      localTravel: {
+        mode: "fallback",
+        source: "Distance heuristic",
+        message: "Local travel estimate uses route distance and daily transfers.",
+      },
+    },
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
+export function convertBudgetEstimateCurrency(
+  estimate: TripBudgetEstimate,
+  currency: string,
+  exchangeRate: number
+): TripBudgetEstimate {
+  if (estimate.currency === currency) {
+    return estimate
+  }
+
+  const convert = (value: number) => Math.round(value * exchangeRate)
+
+  return {
+    ...estimate,
+    totalBudget: convert(estimate.totalBudget),
+    totalBudgetRange: {
+      min: convert(estimate.totalBudgetRange.min),
+      max: convert(estimate.totalBudgetRange.max),
+    },
+    perDayCost: convert(estimate.perDayCost),
+    travelCost: convert(estimate.travelCost),
+    breakdown: {
+      stay: convert(estimate.breakdown.stay),
+      food: convert(estimate.breakdown.food),
+      travel: convert(estimate.breakdown.travel),
+      activities: convert(estimate.breakdown.activities),
+    },
+    flightCost: convert(estimate.flightCost),
+    intercityTravelCost: convert(estimate.intercityTravelCost),
+    localTransportCost: convert(estimate.localTransportCost),
+    hotelCost: convert(estimate.hotelCost),
+    averageHotelPerNight: convert(estimate.averageHotelPerNight),
+    activitiesBuffer: convert(estimate.activitiesBuffer),
+    destinationDetails: estimate.destinationDetails.map((destination) => ({
+      ...destination,
+      hotelPerNight: convert(destination.hotelPerNight),
+      hotelCost: convert(destination.hotelCost),
+      foodCost: convert(destination.foodCost),
+      localTransportCost: convert(destination.localTransportCost),
+      activitiesCost: convert(destination.activitiesCost),
+      flightEstimate: convert(destination.flightEstimate),
+      totalEstimate: convert(destination.totalEstimate),
+      averageDailyCost: destination.averageDailyCost ? convert(destination.averageDailyCost) : undefined,
+    })),
+    currency,
+    sourceAttribution: Array.from(
+      new Set([...estimate.sourceAttribution, `Fallback currency conversion at ${exchangeRate} ${currency}/USD`])
+    ),
   }
 }

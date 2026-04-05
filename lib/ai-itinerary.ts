@@ -141,7 +141,7 @@ export function normalizeAiPlannerResponse(
       const locationLabel = String(a?.locationLabel || a?.location || d?.city || "")
       const durationMinutes = Number(a?.durationMinutes ?? a?.duration_minutes ?? 90)
       const cost = Number(a?.cost ?? a?.estimated_cost ?? 0)
-      const currency = String(a?.currency || "USD")
+      const currency = String(a?.currency || "INR")
       const isOptional = Boolean(a?.isOptional ?? a?.is_optional ?? false)
       const id = String(a?.id || `d${dayNumber}-activity-${idx + 1}-${time}`)
       const meta = a?.meta && typeof a.meta === "object" ? a.meta : {}
@@ -178,7 +178,7 @@ export function normalizeAiPlannerResponse(
     changes_summary: Array.isArray(value?.changes_summary) ? value.changes_summary : [],
     budget_estimate: {
       total: Number(value?.budget_estimate?.total ?? value?.estimated_budget_impact?.new_total ?? 0),
-      currency: String(value?.budget_estimate?.currency || "USD"),
+      currency: String(value?.budget_estimate?.currency || "INR"),
     },
   }
 }

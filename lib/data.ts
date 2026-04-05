@@ -6,6 +6,8 @@
 //   Region, Tourism_Revenue_Million_USD, Average_Visit_Duration_Hours,
 //   Famous_For
 // Usage: Filter by region/type/budget, rank by popularity, match season
+import { convertUsdToInr, DEFAULT_CURRENCY } from "@/lib/currency"
+
 // ============================================================
 
 export interface Destination {
@@ -1893,7 +1895,7 @@ const globalTravelDestinations: Destination[] = [
 
 // Real data from world_famous_places_2024.csv
 // Budget min/max derived from entry_fee + regional cost-of-living estimate
-export const destinations: Destination[] = [
+const destinationsUsd: Destination[] = [
   {
     id: "1",
     name: "Eiffel Tower",
@@ -2970,7 +2972,7 @@ export interface HotelData {
   longitude: number
 }
 
-export const hotels: HotelData[] = [
+const hotelsUsd: HotelData[] = [
   {
     id: "h1",
     name: "The Ritz Paris",
@@ -3133,7 +3135,7 @@ export interface BudgetEstimate {
   entryFee: number
 }
 
-export const budgetEstimates: BudgetEstimate[] = [
+const budgetEstimatesUsd: BudgetEstimate[] = [
   { destination: "Eiffel Tower", city: "Paris", country: "France", region: "Western Europe", avgFlightCost: 650, hotelPricePerNight: 220, foodCostPerDay: 65, localTransportCost: 15, activityCostAvg: 45, entryFee: 35 },
   { destination: "Times Square", city: "New York City", country: "United States", region: "North America", avgFlightCost: 350, hotelPricePerNight: 280, foodCostPerDay: 75, localTransportCost: 20, activityCostAvg: 50, entryFee: 0 },
   { destination: "Great Wall of China", city: "Beijing", country: "China", region: "East Asia", avgFlightCost: 800, hotelPricePerNight: 95, foodCostPerDay: 25, localTransportCost: 10, activityCostAvg: 20, entryFee: 10 },
@@ -3371,7 +3373,7 @@ export const chatSuggestions = [
   "What's the best time to visit the Colosseum?",
   "Plan a 3-day Paris itinerary",
   "Compare hotel prices in Dubai vs Rome",
-  "Adventure trips under $1500",
+  "Adventure trips under ₹1,25,000",
 ]
 
 // ============================================================
@@ -3389,7 +3391,7 @@ export const weatherData = parisWeather.map((w) => ({
 // LEGACY COMPAT: flights data
 // ============================================================
 
-export const flights = [
+const flightsUsd = [
   { id: "f1", airline: "Air France", from: "JFK", to: "CDG", departure: "08:30", arrival: "21:45", duration: "7h 15m", price: 650, class: "Economy" },
   { id: "f2", airline: "Delta", from: "JFK", to: "CDG", departure: "19:00", arrival: "08:30", duration: "7h 30m", price: 580, class: "Economy" },
   { id: "f3", airline: "United", from: "JFK", to: "CDG", departure: "22:00", arrival: "11:15", duration: "7h 15m", price: 720, class: "Economy" },
@@ -3398,5 +3400,37 @@ export const flights = [
   { id: "f6", airline: "Virgin Atlantic", from: "LHR", to: "JFK", departure: "10:30", arrival: "13:45", duration: "8h 15m", price: 590, class: "Economy" },
   { id: "f7", airline: "Air France", from: "CDG", to: "JFK", departure: "14:00", arrival: "16:30", duration: "8h 30m", price: 610, class: "Economy" },
 ]
+
+export const destinations: Destination[] = destinationsUsd.map((destination) => ({
+  ...destination,
+  budget: {
+    min: convertUsdToInr(destination.budget.min),
+    max: convertUsdToInr(destination.budget.max),
+    currency: DEFAULT_CURRENCY,
+  },
+  entryFee: destination.entryFee > 0 ? convertUsdToInr(destination.entryFee, 10) : 0,
+  tourismRevenue: convertUsdToInr(destination.tourismRevenue, 1000),
+}))
+
+export const hotels: HotelData[] = hotelsUsd.map((hotel) => ({
+  ...hotel,
+  price: convertUsdToInr(hotel.price),
+}))
+
+export const budgetEstimates: BudgetEstimate[] = budgetEstimatesUsd.map((estimate) => ({
+  ...estimate,
+  avgFlightCost: convertUsdToInr(estimate.avgFlightCost),
+  hotelPricePerNight: convertUsdToInr(estimate.hotelPricePerNight),
+  foodCostPerDay: convertUsdToInr(estimate.foodCostPerDay, 10),
+  localTransportCost: convertUsdToInr(estimate.localTransportCost, 10),
+  activityCostAvg: convertUsdToInr(estimate.activityCostAvg, 10),
+  entryFee: estimate.entryFee > 0 ? convertUsdToInr(estimate.entryFee, 10) : 0,
+}))
+
+export const flights = flightsUsd.map((flight) => ({
+  ...flight,
+  price: convertUsdToInr(flight.price),
+  currency: DEFAULT_CURRENCY,
+}))
 
 

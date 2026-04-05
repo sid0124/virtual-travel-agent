@@ -27,7 +27,7 @@ export function ChatBubble({ inline = false, className }: ChatBubbleProps) {
           <p className="mb-4 text-sm text-muted-foreground">
             Hi! I&apos;m your AI travel companion. Ready to help you plan your perfect trip?
           </p>
-          <Link href="/chat">
+          <Link href="/ai-assistant">
             <Button className="w-full">Start Planning</Button>
           </Link>
         </div>

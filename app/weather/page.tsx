@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Navigation } from "@/components/navigation"
 import { ChatBubble } from "@/components/chat-bubble"
 import { Button } from "@/components/ui/button"
+import { formatCurrency } from "@/lib/currency"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -452,7 +453,7 @@ export default function WeatherPage() {
                             <p className="text-sm text-muted-foreground">{dest.city || weatherCity}</p>
                           )}
                           <p className="mt-1 text-xs text-muted-foreground">
-                            Entry: {dest.entryFee === 0 ? "Free" : `$${dest.entryFee ?? 0}`}
+                            Entry: {dest.entryFee === 0 ? "Free" : formatCurrency(dest.entryFee ?? 0)}
                             {"avgVisitDuration" in dest && typeof dest.avgVisitDuration === "number"
                               ? ` | Visit: ~${dest.avgVisitDuration}h`
                               : ""}
