@@ -17,6 +17,10 @@ export type SelectedDestination = {
   latitude?: number
   longitude?: number
   entryFee?: number
+  destinationKey?: string
+  originalName?: string
+  sourceType?: string
+  sourceItemId?: string
   budget?: {
     min: number
     max: number
@@ -250,6 +254,10 @@ export function normalizeSelectedDestination(input: Partial<SelectedDestination>
     latitude: Number.isFinite(Number(input.latitude)) ? Number(input.latitude) : datasetMatch?.latitude,
     longitude: Number.isFinite(Number(input.longitude)) ? Number(input.longitude) : datasetMatch?.longitude,
     entryFee: Number.isFinite(Number(input.entryFee)) ? Number(input.entryFee) : datasetMatch?.entryFee,
+    destinationKey: input.destinationKey || id,
+    originalName: input.originalName || name,
+    sourceType: input.sourceType || "destination",
+    sourceItemId: input.sourceItemId || id,
     budget: input.budget || datasetMatch?.budget,
   }
 }

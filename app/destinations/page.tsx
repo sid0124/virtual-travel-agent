@@ -56,6 +56,7 @@ import {
   TRIP_SETUP_STORAGE_KEY,
   type TravelStyle,
 } from "@/lib/trip-budget"
+import { hydrateDestinationPageFromChatSelection } from "@/lib/chat-planner"
 import { cn, calculateDistance } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
 
@@ -266,8 +267,7 @@ export default function DestinationsPage() {
   )
 
   useEffect(() => {
-    fetch("/api/selection")
-      .then((res) => res.json())
+    hydrateDestinationPageFromChatSelection()
       .then((data) => {
         const nextSelectedIds = data.selectedIds || []
         const nextSelectedPlaces = dedupeSelectedPlaces(

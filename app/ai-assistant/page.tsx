@@ -52,7 +52,14 @@ import {
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { DEFAULT_CURRENCY, formatCurrency } from "@/lib/currency"
+import {
+  hydrateDestinationPageFromChatSelection,
+  normalizePlaceSelection,
+  saveChatItinerary,
+  type ChatActionablePayload,
+} from "@/lib/chat-planner"
 import { buildDestinationImageUrl, destinationFallbackImage } from "@/lib/data"
+import { normalizeChatbotPlaces } from "@/lib/planner-destination"
 import { isUnavailablePlaceholderImage } from "@/lib/place-images"
 import { makeSegmentKey, normalizeCity, readTripPlan, saveTripPlan, type TripPlan } from "@/lib/trip-plan"
 import { dedupeSelectedDestinations, defaultTripSetupState, type DiscoveryContextState } from "@/lib/trip-budget"
@@ -121,6 +128,7 @@ type TravelMessage = {
   id: string
   role: Role
   content: string
+  payload?: ChatActionablePayload
   messageType?: "plain_text" | "itinerary" | "recommendations" | "budget" | "hotels" | "nearby" | "map" | "weather" | "flights" | "support"
   responseType?:
     | "plain_text"
@@ -298,6 +306,37 @@ function getTripLengthLabel(dateRange?: { from?: string; to?: string }) {
 
 function dedupeMemoryDestinations(items: any[]) {
   return dedupeSelectedDestinations(Array.isArray(items) ? items : [])
+}
+
+function getPlannerSelectionIds(items: any[]) {
+  return Array.from(
+    new Set(
+      (Array.isArray(items) ? items : [])
+        .flatMap((item) => [item?.id, item?.sourceItemId, item?.destinationKey])
+        .filter(Boolean)
+        .map((item) => String(item))
+    )
+  )
+}
+
+function buildRecommendationCardsFromPayload(payload?: ChatActionablePayload | null) {
+  if (!payload || payload.type !== "recommendations") return []
+  return payload.places.map((place) => ({
+    id: place.destinationKey,
+    name: place.label,
+    city: place.city,
+    state: place.state,
+    country: place.country,
+    type: place.type,
+    category: place.type,
+    originalName: place.originalName,
+    destinationKey: place.destinationKey,
+    sourceType: place.type,
+    sourceItemId: place.destinationKey,
+    whyThisMatches: `${place.label} is a strong match for the trip style in this chat.`,
+    highlights: [place.type, place.state, place.country].filter(Boolean),
+    tags: [place.type, place.state, place.country].filter(Boolean),
+  }))
 }
 
 function getFocusedDestination(memory: any) {
@@ -1728,9 +1767,16 @@ function NearbyPlacePlannerCard({
 
         <div className="mt-4 flex flex-wrap gap-2">
           <button
-            onClick={() => onOpenScheduler(selectedItems, { prompt: "Add selected places to your itinerary" })}
+            onClick={() => onPrimaryAction("Plan trip with selected places")}
             disabled={!selectedItems.length}
             className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Plan Trip
+          </button>
+          <button
+            onClick={() => onOpenScheduler(selectedItems, { prompt: "Add selected places to your itinerary" })}
+            disabled={!selectedItems.length}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Add selected to itinerary
           </button>
@@ -3502,7 +3548,7 @@ function DestinationSuggestions({
 
 export default function AiAssistantPage() {
   const router = useRouter()
-  const { tripSetup, addDestination, hydrated } = useTripPlanning()
+  const { tripSetup, addDestination, setTripSetup, hydrated } = useTripPlanning()
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState("")
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -3725,22 +3771,90 @@ export default function AiAssistantPage() {
     }))
   }
 
+  async function persistPlannerSelectionsAndOpenDestinations(rawPlaces: any[], sourceLabel: string) {
+    const normalizedPlaces = normalizeChatbotPlaces(rawPlaces)
+    if (!normalizedPlaces.length) {
+      addAssistantNote(`Select at least one place before using ${sourceLabel}.`)
+      return
+    }
+
+    try {
+      const response = await fetch("/api/selection", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          selectedPlaces: normalizedPlaces,
+        }),
+      })
+
+      if (!response.ok) {
+        const details = await response.text().catch(() => "")
+        console.error("[ai-chat] Failed to persist planner selections", response.status, details)
+        addAssistantNote("I couldn't carry those places into the destination planner just yet. Please try again.")
+        return
+      }
+      await hydrateDestinationPageFromChatSelection().catch(() => null)
+
+      setTripSetup((prev) => ({
+        ...prev,
+        selectedDestinations: normalizedPlaces,
+      }))
+
+      updateActiveSessionMemory((memory) => ({
+        ...memory,
+        selectedDestinations: dedupeSelectedDestinations([
+          ...normalizedPlaces,
+          ...((memory?.selectedDestinations || []).filter(
+            (item: any) => !normalizedPlaces.some((candidate) => candidate.id === item?.id)
+          ) || []),
+        ]),
+        focusDestinationId: normalizedPlaces[0]?.id || memory?.focusDestinationId,
+      }))
+
+      router.push("/destinations")
+    } catch (error) {
+      console.error("[ai-chat] Planner selection handoff failed", error)
+      addAssistantNote("I couldn't open the destination planner with those places. Please try again.")
+    }
+  }
+
   function handleDestinationSelect(destination: any) {
     if (!activeSession) return
+    const normalizedDestination = normalizePlaceSelection(destination)
+    if (!normalizedDestination) {
+      addAssistantNote("I couldn't map that place into a planner-friendly destination yet.")
+      return
+    }
 
     updateActiveSessionMemory((memory) => ({
       ...memory,
-      selectedDestinations: dedupeSelectedDestinations([...(memory?.selectedDestinations || []), destination]),
+      selectedDestinations: dedupeSelectedDestinations([...(memory?.selectedDestinations || []), normalizedDestination]),
+      destinationSuggestionSelectionIds: Array.from(
+        new Set([
+          ...(memory?.destinationSuggestionSelectionIds || []),
+          destination?.id,
+          normalizedDestination.id,
+          normalizedDestination.sourceItemId,
+        ].filter(Boolean))
+      ),
+      focusDestinationId: normalizedDestination.id,
     }))
 
     if (activeSession.mode === "connected") {
-      addDestination(destination)
+      addDestination(normalizedDestination)
     }
+
+    const destinationLabel =
+      normalizedDestination.originalName && normalizedDestination.originalName !== normalizedDestination.name
+        ? `${normalizedDestination.originalName} will plan as ${normalizedDestination.name}`
+        : normalizedDestination.name
 
     addAssistantNote(
       activeSession.mode === "connected"
-        ? `${destination.name} is now added to this chat and your current trip context.`
-        : `${destination.name} is selected in this chat. I can now compare it, estimate budget, or start a trip around it.`
+        ? `${destinationLabel} is now added to this chat and your current trip context.`
+        : `${destinationLabel} is selected in this chat. I can now compare it, estimate budget, or start a trip around it.`
     )
   }
 
@@ -4057,57 +4171,15 @@ export default function AiAssistantPage() {
       addAssistantNote("I need an itinerary and destination in context before I can save it to your trip.")
       return
     }
-
-    const basePlan =
-      readTripPlan() ||
-      createAssistantTripPlanBase(
-        currentMemory,
-        mainDestination,
+    saveChatItinerary({
+      miniPlan,
+      mainDestination,
+      memory: currentMemory,
+      dayOptions:
         nearbyDayOptions?.length
           ? nearbyDayOptions
-          : [{ key: "day-1", dayNumber: 1, label: "Day 1" }]
-      )
-    const targetDay = basePlan.itinerary.days[0] || {
-      dayNumber: 1,
-      date: currentMemory?.dateRange?.from || "",
-      title: miniPlan.title,
-      city: mainDestination.city || mainDestination.name,
-      activities: [],
-    }
-    const subtype = normalizeText(miniPlan?.subtype)
-    const timingSlots =
-      subtype === "evening" || subtype === "romantic"
-        ? ["17:30", "18:30", "19:45", "21:00", "22:00"]
-        : ["09:00", "10:30", "12:00", "14:00", "16:00", "18:00"]
-
-    targetDay.title = miniPlan.title || targetDay.title
-    targetDay.city = mainDestination.city || mainDestination.name || targetDay.city
-    targetDay.activities = (miniPlan.stops || []).map((stop: any, index: number) => ({
-      id: `ai-mini-plan-${normalizeText(mainDestination.name)}-${index + 1}`,
-      type: /snack|lunch|dinner|dessert|food/i.test(`${stop?.title} ${stop?.detail}`) ? "food" : "sightseeing",
-      title: stop.title,
-      time: timingSlots[index] || timingSlots[timingSlots.length - 1],
-      locationLabel: mainDestination.name,
-      cost: 0,
-      currency: DEFAULT_CURRENCY,
-      durationMinutes: /\b30\b/.test(stop?.duration || "") ? 30 : /\b45\b/.test(stop?.duration || "") ? 45 : /\b2\b/.test(stop?.duration || "") ? 120 : 60,
-      aiNotes: stop.detail,
-      meta: {
-        placeId: stop.id,
-        source: "ai-chat-mini-plan",
-      },
-    }))
-
-    const nextPlan: TripPlan = {
-      ...basePlan,
-      itinerary: {
-        days: [targetDay, ...basePlan.itinerary.days.slice(1)],
-      },
-      updatedAt: Date.now(),
-      lastUpdatedAt: Date.now(),
-    }
-
-    saveTripPlan(nextPlan)
+          : [{ key: "day-1", dayNumber: 1, label: "Day 1" }],
+    })
     updateActiveSessionMemory((memory) =>
       mergeItineraryMemory(memory, {
         tripStage: "saved",
@@ -4469,6 +4541,7 @@ export default function AiAssistantPage() {
         id: createId(),
         role: "assistant",
         content: assistantReply,
+        payload: data.payload,
         messageType: normalizeMessageType(data.type, data.responseType),
         responseType: data.responseType,
         artifacts: data.artifacts,
@@ -4619,7 +4692,18 @@ export default function AiAssistantPage() {
 
     const normalized = normalizeText(action)
     const lastUserPrompt = [...activeSession.messages].reverse().find((message) => message.role === "user")?.content
-    const selectedNames = (currentMemory?.selectedDestinations || []).map((item: any) => item.name).filter(Boolean)
+    const recommendationSelectionIds = Array.isArray(currentMemory?.destinationSuggestionSelectionIds)
+      ? currentMemory.destinationSuggestionSelectionIds.map((item: any) => String(item))
+      : []
+    const selectedRecommendationDestinations =
+      recommendationSelectionIds.length > 0
+        ? (currentMemory?.selectedDestinations || []).filter((item: any) =>
+            recommendationSelectionIds.includes(String(item?.id)) ||
+            recommendationSelectionIds.includes(String(item?.sourceItemId)) ||
+            recommendationSelectionIds.includes(String(item?.destinationKey))
+          )
+        : currentMemory?.selectedDestinations || []
+    const selectedNames = selectedRecommendationDestinations.map((item: any) => item.name).filter(Boolean)
     const nearbyRecommendation = getLatestNearbyRecommendation()
     const latestFlightSearch = getLatestFlightSearch()
     const latestHotelRecommendation = getLatestHotelRecommendation()
@@ -4785,7 +4869,20 @@ export default function AiAssistantPage() {
       return
     }
     if ((normalized === "start plan with selected places" || normalized === "start trip with selected places") && selectedNames.length) {
-      sendMessage(`Build a trip plan for ${selectedNames.join(", ")}`)
+      persistPlannerSelectionsAndOpenDestinations(selectedRecommendationDestinations, "Plan Trip")
+      return
+    }
+    if ((normalized === "start plan with selected places" || normalized === "start trip with selected places") && !selectedNames.length) {
+      addAssistantNote("Select at least one suggested place before starting the trip planner.")
+      return
+    }
+    if (normalized === "plan trip with selected places") {
+      const itemsToPlan = nearbySelectedItems.length ? nearbySelectedItems : []
+      if (!itemsToPlan.length) {
+        addAssistantNote("Select at least one nearby place before starting the trip planner.")
+        return
+      }
+      persistPlannerSelectionsAndOpenDestinations(itemsToPlan, "Plan Trip")
       return
     }
     if (normalized === "find hotels for selected places" && selectedNames.length) {
@@ -5365,16 +5462,29 @@ export default function AiAssistantPage() {
                                   />
                                 </div>
                               ) : null}
-                              {normalizeMessageType(message.messageType, message.responseType) === "recommendations" && (message.artifacts?.destinationRecommendations?.cards?.length || message.artifacts?.destinations?.length) ? (
+                              {normalizeMessageType(message.messageType, message.responseType) === "recommendations" && (message.artifacts?.destinationRecommendations?.cards?.length || message.artifacts?.destinations?.length || (message.payload?.type === "recommendations" && message.payload.places.length > 0)) ? (
                                 <div className="mt-4">
+                                  {(() => {
+                                    const payloadCards = buildRecommendationCardsFromPayload(message.payload)
+                                    const recommendationCards =
+                                      message.artifacts?.destinationRecommendations?.cards ||
+                                      message.artifacts?.destinations ||
+                                      payloadCards
+
+                                    return (
                                   <DestinationSuggestions
                                     recommendation={
                                       message.artifacts?.destinationRecommendations || {
-                                        cards: message.artifacts?.destinations || [],
+                                        cards: recommendationCards,
                                       }
                                     }
                                     mode={activeSession.mode}
-                                    selectedIds={(currentMemory?.selectedDestinations || []).map((item: any) => item.id)}
+                                    selectedIds={Array.from(
+                                      new Set([
+                                        ...(currentMemory?.destinationSuggestionSelectionIds || []),
+                                        ...getPlannerSelectionIds(currentMemory?.selectedDestinations || []),
+                                      ])
+                                    )}
                                     savedIds={currentMemory?.savedDestinationIds || []}
                                     comparedIds={currentMemory?.comparedDestinationIds || []}
                                     onSelect={handleDestinationSelect}
@@ -5385,6 +5495,8 @@ export default function AiAssistantPage() {
                                     onFilter={handleRecommendationFilter}
                                     onPrimaryAction={handleAction}
                                   />
+                                    )
+                                  })()}
                                 </div>
                               ) : null}
                               {message.artifacts?.hotels?.length && !message.artifacts?.hotelRecommendations?.cards?.length ? <div className="mt-4"><TravelOptions title="Best hotel matches" items={message.artifacts.hotels} type="hotel" /></div> : null}

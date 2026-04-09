@@ -2,6 +2,10 @@ import Groq from "groq-sdk"
 import { NextResponse } from "next/server"
 
 import { amadeusGet, isAmadeusConfigured, resolveAirportCode } from "@/lib/amadeus"
+import {
+  buildChatItineraryPayload,
+  buildChatRecommendationPayload,
+} from "@/lib/chat-planner"
 import { convertCurrencyValue, DEFAULT_CURRENCY, formatCurrency } from "@/lib/currency"
 import { destinationWeather, destinations, flights, hotels } from "@/lib/data"
 import { generateDemoFlights } from "@/lib/demo-inventory"
@@ -792,6 +796,122 @@ const SEARCH_STOP_WORDS = new Set([
 ])
 
 const CURATED_NEARBY_PLACES: Record<string, NearbyPlace[]> = {
+  delhi: [
+    {
+      id: "delhi-taj-mahal",
+      name: "Taj Mahal",
+      subtitle: "Agra day-trip icon",
+      whyVisit: "The strongest classic short trip from Delhi if you want an iconic landmark and a clean heritage-focused outing.",
+      distanceKm: 233,
+      travelMinutes: 240,
+      travelMode: "drive",
+      category: "Attraction",
+      bestFor: "Iconic getaway",
+      bestForTags: ["Heritage", "Agra", "Day trip"],
+      visitDuration: "Full day",
+      whyAdd: "A polished first pick when you want one of North India's most recognizable sights.",
+    },
+    {
+      id: "delhi-jaipur",
+      name: "Jaipur",
+      subtitle: "Pink City weekend",
+      whyVisit: "A strong Delhi weekend extension if you want forts, palaces, markets, and a bigger destination feel.",
+      distanceKm: 281,
+      travelMinutes: 330,
+      travelMode: "drive",
+      category: "City",
+      bestFor: "Weekend getaway",
+      bestForTags: ["Culture", "Palaces", "Weekend trip"],
+      visitDuration: "1-2 days",
+      whyAdd: "A reliable upgrade from a simple day trip if you want a fuller destination experience.",
+    },
+    {
+      id: "delhi-rishikesh",
+      name: "Rishikesh",
+      subtitle: "River and mountain escape",
+      whyVisit: "A lighter North India escape from Delhi with river views, cafes, and a calmer outdoors feel.",
+      distanceKm: 242,
+      travelMinutes: 300,
+      travelMode: "drive",
+      category: "Nature",
+      bestFor: "Scenic getaway",
+      bestForTags: ["Nature", "Relaxed", "Weekend trip"],
+      visitDuration: "1-2 days",
+      whyAdd: "Works well if you want fresh air and a slower pace instead of another city-heavy trip.",
+    },
+    {
+      id: "delhi-haridwar",
+      name: "Haridwar",
+      subtitle: "Spiritual riverside stop",
+      whyVisit: "A meaningful short trip from Delhi if you want a spiritual, riverfront, and culture-led change of pace.",
+      distanceKm: 220,
+      travelMinutes: 270,
+      travelMode: "drive",
+      category: "Heritage",
+      bestFor: "Culture-led escape",
+      bestForTags: ["Spiritual", "Riverfront", "Short trip"],
+      visitDuration: "1 day",
+      whyAdd: "A smart add if you want a heritage-heavy escape without overcomplicating logistics.",
+    },
+  ],
+  goa: [
+    {
+      id: "goa-baga-beach",
+      name: "Baga Beach",
+      subtitle: "North Goa beach strip",
+      whyVisit: "One of Goa's easiest all-round beach picks for shacks, water activities, and a lively shoreline.",
+      distanceKm: 6,
+      travelMinutes: 18,
+      travelMode: "drive",
+      category: "Beach",
+      bestFor: "Popular beach",
+      bestForTags: ["Beach", "North Goa", "Lively"],
+      visitDuration: "2-4 hours",
+      whyAdd: "A strong first pick if you want the classic energetic Goa beach scene.",
+    },
+    {
+      id: "goa-anjuna-beach",
+      name: "Anjuna Beach",
+      subtitle: "Cliffs, cafes, and sunset views",
+      whyVisit: "A more character-rich Goa beach with rocky viewpoints, cafes, and a relaxed sunset atmosphere.",
+      distanceKm: 8,
+      travelMinutes: 22,
+      travelMode: "drive",
+      category: "Beach",
+      bestFor: "Scenic beach",
+      bestForTags: ["Beach", "Sunset", "Cafe scene"],
+      visitDuration: "2-4 hours",
+      whyAdd: "Works well if you want a beach with more personality than just a crowded main strip.",
+    },
+    {
+      id: "goa-candolim-beach",
+      name: "Candolim",
+      subtitle: "Relaxed Goa beach base",
+      whyVisit: "Candolim is a calmer Goa beach stretch that still keeps you close to shacks, stays, and Fort Aguada access.",
+      distanceKm: 5,
+      travelMinutes: 16,
+      travelMode: "drive",
+      category: "Beach",
+      bestFor: "Balanced beach stop",
+      bestForTags: ["Beach", "Relaxed", "Goa classic"],
+      visitDuration: "2-4 hours",
+      whyAdd: "A strong balanced beach stop when you want Goa without the busiest party-heavy crowd.",
+    },
+    {
+      id: "goa-calangute-beach",
+      name: "Calangute Beach",
+      subtitle: "Classic Goa shoreline",
+      whyVisit: "A classic Goa beach with an easy long shoreline and plenty of casual beach-day options nearby.",
+      distanceKm: 7,
+      travelMinutes: 20,
+      travelMode: "drive",
+      category: "Beach",
+      bestFor: "Classic beach day",
+      bestForTags: ["Beach", "Classic Goa", "Easy access"],
+      visitDuration: "2-4 hours",
+      whyAdd: "Simple to pair into a Goa beach-hopping day without much extra planning.",
+    },
+  ],
   "times square": [
     { id: "ts-broadway", name: "Broadway theatres", subtitle: "Theatre district", whyVisit: "The classic Times Square experience for live shows and musicals.", distanceKm: 0.4, travelMinutes: 5, travelMode: "walk", category: "Attraction", bestFor: "Evening entertainment", bestForTags: ["Entertainment", "Landmark", "Night out"], visitDuration: "2-3 hours", whyAdd: "A classic AI pick if you want the full Times Square energy." },
     { id: "ts-bryant", name: "Bryant Park", subtitle: "Midtown green space", whyVisit: "A calmer nearby stop for coffee, reading, and skyline views.", distanceKm: 0.9, travelMinutes: 11, travelMode: "walk", category: "Nature", bestFor: "Relaxed break", bestForTags: ["Nature", "Photos", "Hidden gem"], visitDuration: "45-60 min", whyAdd: "A smart breather between busier Midtown stops." },
@@ -976,8 +1096,10 @@ function isBroadDestinationPlace(place: any) {
   return /(urban|city|island|hill station|beach|destination|heritage city|metropolitan)/.test(descriptor)
 }
 
-function searchNearbyRegionalDestinations(place: any, limit = 6): NearbyPlace[] {
+function searchNearbyRegionalDestinations(place: any, limit = 6, options?: { minDistanceKm?: number; categoryFilter?: string }): NearbyPlace[] {
   if (!Number.isFinite(Number(place?.latitude)) || !Number.isFinite(Number(place?.longitude))) return []
+  const minDistanceKm = Number.isFinite(Number(options?.minDistanceKm)) ? Number(options?.minDistanceKm) : 20
+  const categoryFilter = options?.categoryFilter || ""
 
   return destinations
     .filter((destination) => destination.id !== place.id)
@@ -988,9 +1110,15 @@ function searchNearbyRegionalDestinations(place: any, limit = 6): NearbyPlace[] 
       )
       return { destination, distanceKm }
     })
-    .filter((item) => item.distanceKm >= 20 && item.distanceKm <= 320)
+    .filter((item) => item.distanceKm >= minDistanceKm && item.distanceKm <= 320)
     .filter((item) => norm(item.destination.country) === norm(place.country))
     .filter((item) => norm(item.destination.state) === norm(place.state) || norm(item.destination.region) === norm(place.region))
+    .filter((item) => matchesNearbyCategoryFilter({
+      category: item.destination.category || item.destination.type,
+      bestFor: item.destination.category || item.destination.type,
+      bestForTags: item.destination.tags || item.destination.interests || [],
+      whyVisit: item.destination.description,
+    }, categoryFilter))
     .sort((a, b) => {
       const sameStateScore = norm(a.destination.state) === norm(place.state) ? -30 : 0
       const sameStateScoreB = norm(b.destination.state) === norm(place.state) ? -30 : 0
@@ -1026,6 +1154,69 @@ function searchNearbyRegionalDestinations(place: any, limit = 6): NearbyPlace[] 
           : `Easy add-on escape from ${place.name} without overcomplicating the route.`,
       }
     })
+}
+
+function searchBroadDestinationBeaches(place: any, limit = 6): NearbyPlace[] {
+  if (!Number.isFinite(Number(place?.latitude)) || !Number.isFinite(Number(place?.longitude))) return []
+  const curated = CURATED_NEARBY_PLACES[norm(place?.name)]
+  if (curated?.length) {
+    const curatedBeaches = curated
+      .filter((item) => matchesNearbyCategoryFilter(item, "Beaches"))
+      .slice(0, limit)
+    if (curatedBeaches.length) return curatedBeaches
+  }
+
+  const mapBeachDestination = (item: { destination: (typeof destinations)[number]; distanceKm: number }) => ({
+      ...buildTravelMeta(item.distanceKm),
+      id: item.destination.id,
+      name: item.destination.name,
+      image: item.destination.image,
+      imageQuery: [item.destination.name, item.destination.city, item.destination.state, item.destination.country, item.destination.category || item.destination.type].filter(Boolean).join(" "),
+      city: item.destination.city,
+      state: item.destination.state,
+      country: item.destination.country,
+      category: item.destination.category || item.destination.type,
+      subtitle: [item.destination.city, item.destination.country].filter(Boolean).join(", "),
+      whyVisit: item.destination.description,
+      travelTime: formatNearbyTravelSummary(buildTravelMeta(item.distanceKm)),
+      bestFor: "Beach time",
+      bestForTags: (item.destination.tags || item.destination.interests || []).slice(0, 3),
+      visitDuration: "2-4 hours",
+      whyAdd: `Strong beach pick around ${place.name} if you want a relaxed coastal stop.`,
+    })
+
+  const baseMatches = destinations
+    .filter((destination) => destination.id !== place.id)
+    .filter((destination) => norm(destination.country) === norm(place.country))
+    .filter((destination) =>
+      matchesNearbyCategoryFilter(
+        {
+          category: destination.category || destination.type,
+          bestFor: destination.category || destination.type,
+          bestForTags: destination.tags || destination.interests || [],
+          whyVisit: destination.description,
+        },
+        "Beaches"
+      )
+    )
+    .map((destination) => {
+      const distanceKm = haversineDistanceKm(
+        { name: place.name, latitude: Number(place.latitude), longitude: Number(place.longitude) },
+        { name: destination.name, latitude: Number(destination.latitude), longitude: Number(destination.longitude) }
+      )
+      return { destination, distanceKm }
+    })
+
+  const sameStateMatches = baseMatches
+    .filter((item) => norm(item.destination.state) === norm(place.state))
+    .sort((a, b) => a.distanceKm - b.distanceKm || b.destination.rating - a.destination.rating)
+
+  const selectedMatches = (sameStateMatches.length >= Math.min(3, limit) ? sameStateMatches : baseMatches
+    .filter((item) => norm(item.destination.region) === norm(place.region))
+    .sort((a, b) => a.distanceKm - b.distanceKm || b.destination.rating - a.destination.rating))
+    .slice(0, limit)
+
+  return selectedMatches.map(mapBeachDestination)
 }
 
 function buildGenericStayAreaCards(place: any): HotelRecommendationCard[] {
@@ -1084,6 +1275,7 @@ function extractNearbyRadiusKm(text: string, fallback = 12) {
 
 function parseNearbyCategoryFilter(text: string) {
   const value = norm(text)
+  if (/(beach|beaches|coast|coastal)/.test(value)) return "Beaches"
   if (/(food|eat|restaurant|restaurants|brunch|breakfast|dinner|dessert|coffee|cafe)/.test(value)) return "Food"
   if (/(shopping|mall|market|store|stores)/.test(value)) return "Shopping"
   if (/(hidden gem|hidden gems|local spot|quiet spot|secret|less crowded)/.test(value)) return "Hidden gems"
@@ -1130,8 +1322,10 @@ function matchesNearbyCategoryFilter(item: {
 }, categoryFilter: string) {
   if (!categoryFilter) return true
   const haystack = norm([item.category, item.bestFor, ...(item.bestForTags || []), item.whyVisit].filter(Boolean).join(" "))
+  const primaryHaystack = norm([item.category, item.bestFor, ...(item.bestForTags || [])].filter(Boolean).join(" "))
 
   if (categoryFilter === "Attractions") return /(attraction|landmark|museum|park|view|culture|nature|photography|city)/.test(haystack)
+  if (categoryFilter === "Beaches") return /(beach|coast|island|waterfront)/.test(primaryHaystack)
   if (categoryFilter === "Food") return /(food|cafe|coffee|brunch|dessert|restaurant|dinner)/.test(haystack)
   if (categoryFilter === "Shopping") return /(shopping|market|mall|store)/.test(haystack)
   if (categoryFilter === "Hidden gems") return /(hidden gem|quiet|local vibe|local|relaxed)/.test(haystack)
@@ -1140,7 +1334,7 @@ function matchesNearbyCategoryFilter(item: {
 }
 
 function isNearbyPlacesIntent(text: string) {
-  return /(nearby attractions|nearby places|popular nearby places|popular places near|show nearby places|show more nearby places|show more places|things to do near|attractions near|explore near|places around|around this destination|around this place|visit after reaching|what should i do after reaching there|what should i visit after reaching|what else can i cover|near\s+[a-z])/i.test(text)
+  return /(nearby attractions|nearby places|popular nearby places|popular places near|show nearby places|show more nearby places|show more places|things to do near|attractions near|explore near|places around|around this destination|around this place|visit after reaching|what should i do after reaching there|what should i visit after reaching|what else can i cover|near\s+[a-z]|best beaches?\s+(?:in|near|around)\s+[a-z]|top beaches?\s+(?:in|near|around)\s+[a-z])/i.test(text)
 }
 
 function detectIntent(message: string, attachment?: AssistantAttachment | null): Intent {
@@ -1153,6 +1347,7 @@ function detectIntent(message: string, attachment?: AssistantAttachment | null):
   if (/(itinerary|plan|route|cover|order|day trip|days|vacation|holiday|trip|make it|turn this|refine|lower walking|reduce walking|walking effort|family friendly|kid friendly|snack stop|lunch stop|dinner stop|museum stop|indoor backup|iconic stop|half day|full day|quick plan)/.test(text)) {
     return "planning_guidance"
   }
+  if (/(best|top|popular|show)\s+(?:[\w\s]+)?beaches?\s+(?:in|near|around)\s+[a-z]/.test(text)) return "nearby_places"
   if (/(flight|fly|airport|airfare|book flight|book ticket|book this ticket)/.test(text)) return "flight_search"
   if (/(food|eat|restaurant|restaurants|dining|dinner|lunch|breakfast|brunch|dessert|coffee|cafe|street food|pizza|halal)/.test(text)) return "nearby_food"
   if (isNearbyPlacesIntent(text)) return "nearby_places"
@@ -2017,6 +2212,7 @@ function extractDestinationAnchorPhrases(query: string) {
     query.match(/(?:plan|create|build|design)\s+(?:a\s+)?(?:\d+\s*[- ]?(?:day|days|night|nights)\s+)?(?:trip|itinerary|vacation|holiday)\s+(?:to|for|in)\s+([a-zA-Z][a-zA-Z\s,'-]{1,60}?)(?=\s+(?:for|with|under|on|please|and|that)\b|[?.!,]|$)/i)?.[1],
     query.match(/(?:\d+\s*[- ]?(?:day|days|night|nights)|weekend)\s+(?:trip|itinerary|vacation|holiday)\s+(?:to|for|in)\s+([a-zA-Z][a-zA-Z\s,'-]{1,60}?)(?=\s+(?:for|with|under|on|please|and|that)\b|[?.!,]|$)/i)?.[1],
     query.match(/(?:trip|itinerary|vacation|holiday)\s+(?:to|for|in)\s+([a-zA-Z][a-zA-Z\s,'-]{1,60}?)(?=\s+(?:for|with|under|on|please|and|that)\b|[?.!,]|$)/i)?.[1],
+    query.match(/(?:near|around)\s+([a-zA-Z][a-zA-Z\s,'-]{1,60}?)(?=\s+(?:for|with|under|on|please|and|that)\b|[?.!,]|$)/i)?.[1],
     query.match(/(?:to|for|in)\s+([a-zA-Z][a-zA-Z\s,'-]{1,60}?)(?=\s+(?:for|with|under|on|please|and|that)\b|[?.!,]|$)/i)?.[1],
   ]
 
@@ -2386,10 +2582,18 @@ function resolvePlace(query: string, context: any) {
   const regionalMatch = extractDestinationAnchorPhrases(query)
     .map((phrase) => getRegionalDestinationMatch(phrase))
     .find(Boolean)
+  const anchoredRegionalPhrase = extractDestinationAnchorPhrases(query).find(
+    (phrase) => regionalMatch && norm(phrase) === norm(regionalMatch.name || regionalMatch.state || "")
+  )
 
   if (contextNamedMatch) {
     const place = enrichResolvedPlace(contextNamedMatch)
     return place ? { place, source: "context-query" as const } : { place: null, source: "none" as const }
+  }
+
+  if (regionalMatch && (Boolean(anchoredRegionalPhrase) || explicitMatches.length !== 1)) {
+    const place = enrichResolvedPlace(regionalMatch)
+    return place ? { place, source: "query" as const } : { place: null, source: "none" as const }
   }
 
   if (explicitMatches.length === 1) {
@@ -2397,15 +2601,15 @@ function resolvePlace(query: string, context: any) {
     return place ? { place, source: "query" as const } : { place: null, source: "none" as const }
   }
 
-  if (regionalMatch) {
-    const place = enrichResolvedPlace(regionalMatch)
-    return place ? { place, source: "query" as const } : { place: null, source: "none" as const }
-  }
-
   const extractedPhrase =
     query.match(/(?:near|around|in|at)\s+([a-zA-Z\s]+)/i)?.[1]?.trim() ||
     query.match(/(?:food|restaurants|hotels|weather|budget|flights?)\s+(?:near|for|in)\s+([a-zA-Z\s]+)/i)?.[1]?.trim() ||
     query.trim()
+  const extractedRegionalMatch = getRegionalDestinationMatch(extractedPhrase)
+  if (extractedRegionalMatch) {
+    const place = enrichResolvedPlace(extractedRegionalMatch)
+    return place ? { place, source: "query" as const } : { place: null, source: "none" as const }
+  }
   const aliasTarget = PLACE_ALIASES[norm(extractedPhrase)] || PLACE_ALIASES[normalizedQuery]
   const rankedCandidates = aliasTarget ? rankDestinations(aliasTarget, 3) : rankDestinations(extractedPhrase, 3)
   const topCandidate = rankedCandidates[0]
@@ -2733,6 +2937,20 @@ function searchNearbyAttractions(
   const radiusKm = clampNearbyRadiusKm(options.radiusKm ?? 12)
   const categoryFilter = options.categoryFilter || ""
   const excludeIds = new Set(options.excludeIds || [])
+  if (isBroadDestinationPlace(place) && !categoryFilter) {
+    const curatedBroadMatches = (CURATED_NEARBY_PLACES[norm(place?.name)] || [])
+      .slice(0, limit)
+      .filter((item) => !excludeIds.has(item.id))
+    if (curatedBroadMatches.length) return curatedBroadMatches
+    const regionalMatches = searchNearbyRegionalDestinations(place, limit, { minDistanceKm: 140 })
+      .filter((item) => !excludeIds.has(item.id))
+    if (regionalMatches.length) return regionalMatches
+  }
+  if (isBroadDestinationPlace(place) && categoryFilter === "Beaches") {
+    const beachMatches = searchBroadDestinationBeaches(place, limit)
+      .filter((item) => !excludeIds.has(item.id))
+    if (beachMatches.length) return beachMatches
+  }
   const curated = CURATED_NEARBY_PLACES[norm(place?.name)]
   if (curated?.length) {
     const curatedMatches = curated
@@ -2800,9 +3018,8 @@ function searchNearbyAttractions(
   if (rankedMatches.length) return rankedMatches
 
   if (isBroadDestinationPlace(place)) {
-    const regionalMatches = searchNearbyRegionalDestinations(place, limit)
+    const regionalMatches = searchNearbyRegionalDestinations(place, limit, { categoryFilter })
       .filter((item) => !excludeIds.has(item.id))
-      .filter((item) => matchesNearbyCategoryFilter(item, categoryFilter))
     if (regionalMatches.length) return regionalMatches
   }
 
@@ -2820,7 +3037,7 @@ function buildNearbyPlaceRecommendations(place: any, context: any, nearbyPlaces:
   const radiusKm = clampNearbyRadiusKm(context?.nearbyPlanner?.radiusKm || 12)
   const categoryFilter = parseNearbyCategoryFilter(context?.latestUserMessage || "")
   const hasRegionalEscapes = nearbyPlaces.some((item) => Number(item.distanceKm || 0) >= 20)
-  const nearbyCategories = ["Attractions", "Food", "Shopping", "Hidden gems"]
+  const nearbyCategories = ["Attractions", "Beaches", "Food", "Shopping", "Hidden gems"]
   const groupedHints = [
     { label: "AI picks", count: Math.min(3, nearbyPlaces.length) },
     { label: "Walkable", count: nearbyPlaces.filter((item) => item.travelMode === "walk").length },
@@ -3567,15 +3784,15 @@ function buildActions(intent: Intent, focusName?: string, hasNearbySelection = f
   if (intent === "flight_search") return ["Book ticket", "Compare options", "Cheapest flights", "Fastest route"]
   if (intent === "support_handoff") return ["Copy support summary", "Open booking help", "Draft support ticket"]
   if (intent === "planning_guidance") {
-    if (planningProfile?.subtype === "evening") return ["Add dinner stop", "Make it more romantic", "Shorten to 2 hours", "Add nearby dessert spot"]
+    if (planningProfile?.subtype === "evening") return ["Add dinner stop", "Make it more romantic", "Shorten to 2 hours", "Save to trip"]
     if (planningProfile?.subtype === "romantic") return ["Add dinner stop", "Make it more scenic", "Turn into evening date", "Save to trip"]
     if (planningProfile?.subtype === "family") return ["Add kid-friendly stop", "Reduce walking more", "Add lunch break", "Save to trip"]
-    if (planningProfile?.subtype === "budget") return ["Reduce cost further", "Add free stop", "Find cheap food nearby", "Turn into quick plan"]
+    if (planningProfile?.subtype === "budget") return ["Reduce cost further", "Add free stop", "Find cheap food nearby", "Save to trip"]
     if (planningProfile?.subtype === "quick") return ["Extend to half-day", "Reduce walking", "Add one iconic stop", "Save to trip"]
     if (planningProfile?.subtype === "full_day") return ["Add indoor backup stop", "Add lunch stop", "Shorten to half-day", "Save to trip"]
     if (planningProfile?.subtype === "nearby_add_on") return ["Add nearby museum", "Turn into half-day plan", "Find food nearby", "Save to trip"]
     if (itineraryMemory?.latestItinerary) return ["Make it family-friendly", "Add snack stop", "Add nearby museum", "Save to trip"]
-    return ["Make it family-friendly", "Turn this into evening plan", "Add nearby museum", "Reduce walking"]
+    return ["Make it family-friendly", "Turn this into evening plan", "Add nearby museum", "Save to trip"]
   }
   if (intent === "transport_guidance") return ["Open map view", "Nearby places", "Hotels on map", "Build walking plan"]
   if (intent === "lifestyle_guidance") return ["Family-friendly picks", "Couple-friendly plan", "Nightlife nearby", "Shopping nearby"]
@@ -4422,6 +4639,14 @@ export async function POST(req: Request) {
       miniPlan,
       responseSuggestions
     )
+    const payload =
+      intent === "destination_discovery" && destinationRecommendation?.cards?.length
+        ? buildChatRecommendationPayload("recommendations", destinationRecommendation.cards)
+        : intent === "nearby_places" && nearbyPlaceRecommendations?.cards?.length
+          ? buildChatRecommendationPayload("nearby_places", nearbyPlaceRecommendations.cards)
+          : intent === "planning_guidance" && miniPlan && (resolvedPlace || memoryDestinations?.[0])
+            ? buildChatItineraryPayload(miniPlan, resolvedPlace || memoryDestinations?.[0])
+            : null
 
     return NextResponse.json({
       success: true,
@@ -4455,6 +4680,7 @@ export async function POST(req: Request) {
       suggestedActions: responseSuggestions,
       actionCtas: responseActions,
       type: responseContentTypeForIntent(intent),
+      payload,
       responseType: responseTypeForIntent(intent, planningProfile),
       conversationTitle: buildSmartTitle(latestUserMessage, { ...memory, selectedDestinations: memoryDestinations }),
       memory: {

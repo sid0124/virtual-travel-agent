@@ -1,16 +1,24 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
+import { normalizePlaceSelection } from "@/lib/chat-planner"
 import { destinations } from "@/lib/data"
+import { normalizeChatbotPlaces } from "@/lib/planner-destination"
 
 type SelectedPlaceSnapshot = {
   id: string
   name: string
   image?: string
   city?: string
+  state?: string
   country?: string
+  region?: string
   entryFee?: number
   latitude?: number
   longitude?: number
+  destinationKey?: string
+  originalName?: string
+  sourceType?: string
+  sourceItemId?: string
 }
 
 function parseJsonArray<T>(raw: string | undefined): T[] {
@@ -23,42 +31,82 @@ function parseJsonArray<T>(raw: string | undefined): T[] {
   }
 }
 
+function normalizeSnapshot(place: any): SelectedPlaceSnapshot | null {
+  const normalized = normalizePlaceSelection(place)
+  if (!normalized) return null
+
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    image: normalized.image,
+    city: normalized.city,
+    state: normalized.state,
+    country: normalized.country,
+    region: normalized.region,
+    entryFee: normalized.entryFee,
+    latitude: normalized.latitude,
+    longitude: normalized.longitude,
+    destinationKey: normalized.destinationKey,
+    originalName: normalized.originalName,
+    sourceType: normalized.sourceType,
+    sourceItemId: normalized.sourceItemId,
+  }
+}
+
+function parseSelectedPlaceSnapshots(raw: string | undefined) {
+  return parseJsonArray<any>(raw)
+    .map((place) => normalizeSnapshot(place))
+    .filter(Boolean) as SelectedPlaceSnapshot[]
+}
+
+function buildSelectedPlaces(selectedIds: string[], customPlaces: SelectedPlaceSnapshot[]) {
+  const selectedIdSet = new Set(selectedIds)
+  const datasetPlaces: SelectedPlaceSnapshot[] = destinations
+    .filter((destination) => selectedIdSet.has(String(destination.id)))
+    .map((destination) => ({
+      id: destination.id,
+      name: destination.name,
+      image: destination.image,
+      city: destination.city,
+      state: destination.state,
+      country: destination.country,
+      region: destination.region,
+      entryFee: destination.entryFee,
+      latitude: destination.latitude,
+      longitude: destination.longitude,
+      destinationKey: destination.id,
+      originalName: destination.name,
+      sourceType: "destination",
+      sourceItemId: destination.id,
+    }))
+  const customById = new Map(customPlaces.map((place) => [place.id, place]))
+  const datasetById = new Map(datasetPlaces.map((place) => [place.id, place]))
+
+  return selectedIds
+    .map((id) => {
+      const datasetPlace = datasetById.get(id)
+      const customPlace = customById.get(id)
+      if (datasetPlace && customPlace) {
+        return {
+          ...datasetPlace,
+          originalName: customPlace.originalName || datasetPlace.originalName,
+          sourceType: customPlace.sourceType || datasetPlace.sourceType,
+          sourceItemId: customPlace.sourceItemId || datasetPlace.sourceItemId,
+          destinationKey: customPlace.destinationKey || datasetPlace.destinationKey,
+        }
+      }
+      return datasetPlace || customPlace
+    })
+    .filter(Boolean) as SelectedPlaceSnapshot[]
+}
+
 export async function GET() {
   const cookieStore = await cookies()
   const selectionCookie = cookieStore.get("travel_selection")
   const customPlacesCookie = cookieStore.get("travel_selection_places")
   const selectedIds = parseJsonArray<any>(selectionCookie?.value).map((v) => String(v))
-  const selectedIdSet = new Set(selectedIds)
-  const customPlacesRaw = parseJsonArray<any>(customPlacesCookie?.value)
-  const customPlaces: SelectedPlaceSnapshot[] = customPlacesRaw
-    .map((p) => ({
-      id: String(p?.id ?? ""),
-      name: String(p?.name ?? ""),
-      image: p?.image ? String(p.image) : undefined,
-      city: p?.city ? String(p.city) : undefined,
-      country: p?.country ? String(p.country) : undefined,
-      entryFee: Number.isFinite(Number(p?.entryFee)) ? Number(p.entryFee) : undefined,
-      latitude: Number.isFinite(Number(p?.latitude)) ? Number(p.latitude) : undefined,
-      longitude: Number.isFinite(Number(p?.longitude)) ? Number(p.longitude) : undefined,
-    }))
-    .filter((p) => p.id && p.name && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)))
-    .filter((p) => selectedIdSet.has(p.id))
-
-  // enrich with name and image
-  const datasetPlaces: SelectedPlaceSnapshot[] = destinations
-    .filter((d) => selectedIdSet.has(String(d.id)))
-    .map((d) => ({
-      id: d.id,
-      name: d.name,
-      image: d.image,
-      city: d.city,
-      country: d.country,
-      entryFee: d.entryFee,
-      latitude: d.latitude,
-      longitude: d.longitude,
-    }))
-  const datasetIds = new Set(datasetPlaces.map((p) => p.id))
-  const selectedPlaces = [...datasetPlaces, ...customPlaces.filter((p) => !datasetIds.has(p.id))]
+  const customPlaces = parseSelectedPlaceSnapshots(customPlacesCookie?.value)
+  const selectedPlaces = buildSelectedPlaces(selectedIds, customPlaces)
 
   return NextResponse.json({ selectedIds, selectedPlaces })
 }
@@ -71,18 +119,7 @@ export async function POST(req: Request) {
   const selectionCookie = cookieStore.get("travel_selection")
   const customPlacesCookie = cookieStore.get("travel_selection_places")
   let selectedIds = parseJsonArray<any>(selectionCookie?.value).map((v) => String(v))
-  let customPlaces: SelectedPlaceSnapshot[] = parseJsonArray<any>(customPlacesCookie?.value)
-    .map((p) => ({
-      id: String(p?.id ?? ""),
-      name: String(p?.name ?? ""),
-      image: p?.image ? String(p.image) : undefined,
-      city: p?.city ? String(p.city) : undefined,
-      country: p?.country ? String(p.country) : undefined,
-      entryFee: Number.isFinite(Number(p?.entryFee)) ? Number(p.entryFee) : undefined,
-      latitude: Number.isFinite(Number(p?.latitude)) ? Number(p.latitude) : undefined,
-      longitude: Number.isFinite(Number(p?.longitude)) ? Number(p.longitude) : undefined,
-    }))
-    .filter((p) => p.id)
+  let customPlaces = parseSelectedPlaceSnapshots(customPlacesCookie?.value)
   const normalizedId = String(id)
 
   if (selectedIds.includes(normalizedId)) {
@@ -90,19 +127,8 @@ export async function POST(req: Request) {
     customPlaces = customPlaces.filter((p) => p.id !== normalizedId)
   } else {
     selectedIds.push(normalizedId)
-    const lat = Number(place?.latitude)
-    const lon = Number(place?.longitude)
-    if (place && String(place?.name || "").trim() && Number.isFinite(lat) && Number.isFinite(lon)) {
-      const snapshot: SelectedPlaceSnapshot = {
-        id: normalizedId,
-        name: String(place.name),
-        image: place?.image ? String(place.image) : undefined,
-        city: place?.city ? String(place.city) : undefined,
-        country: place?.country ? String(place.country) : undefined,
-        entryFee: Number.isFinite(Number(place?.entryFee)) ? Number(place.entryFee) : undefined,
-        latitude: lat,
-        longitude: lon,
-      }
+    const snapshot = normalizeSnapshot({ ...place, id: normalizedId })
+    if (snapshot) {
       customPlaces = [...customPlaces.filter((p) => p.id !== normalizedId), snapshot]
     }
   }
@@ -111,6 +137,38 @@ export async function POST(req: Request) {
   cookieStore.set("travel_selection_places", JSON.stringify(customPlaces))
 
   return NextResponse.json({ success: true, selectedIds })
+}
+
+export async function PUT(req: Request) {
+  const body = await req.json()
+  const cookieStore = await cookies()
+  const normalizedPlaces = normalizeChatbotPlaces(Array.isArray(body?.selectedPlaces) ? body.selectedPlaces : [])
+  const selectedIds = normalizedPlaces.map((place) => place.id)
+  const customPlaces: SelectedPlaceSnapshot[] = normalizedPlaces.map((place) => ({
+    id: place.id,
+    name: place.name,
+    image: place.image,
+    city: place.city,
+    state: place.state,
+    country: place.country,
+    region: place.region,
+    entryFee: place.entryFee,
+    latitude: place.latitude,
+    longitude: place.longitude,
+    destinationKey: place.destinationKey,
+    originalName: place.originalName,
+    sourceType: place.sourceType,
+    sourceItemId: place.sourceItemId,
+  }))
+
+  cookieStore.set("travel_selection", JSON.stringify(selectedIds))
+  cookieStore.set("travel_selection_places", JSON.stringify(customPlaces))
+
+  return NextResponse.json({
+    success: true,
+    selectedIds,
+    selectedPlaces: buildSelectedPlaces(selectedIds, customPlaces),
+  })
 }
 
 export async function DELETE() {
