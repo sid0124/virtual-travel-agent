@@ -24,6 +24,18 @@ export type SelectedDestination = {
   }
 }
 
+export type DiscoveryContextState = {
+  searchQuery: string
+  budgetRange: [number, number]
+  selectedInterests: string[]
+  selectedRegion: string
+  selectedState: string
+  selectedType: string
+  unescoOnly: boolean
+  sortBy: string
+  activeFiltersCount: number
+}
+
 export type TripSetupState = {
   selectedDestinations: SelectedDestination[]
   dateRange: {
@@ -34,6 +46,7 @@ export type TripSetupState = {
   budgetPreference: BudgetPreference
   startingLocation: string
   travelers: number
+  discoveryContext: DiscoveryContextState
 }
 
 export type RouteStop = {
@@ -206,6 +219,17 @@ export const defaultTripSetupState: TripSetupState = {
   budgetPreference: "mid-range",
   startingLocation: "",
   travelers: 1,
+  discoveryContext: {
+    searchQuery: "",
+    budgetRange: [0, 50000],
+    selectedInterests: [],
+    selectedRegion: "All Regions",
+    selectedState: "All States",
+    selectedType: "All Types",
+    unescoOnly: false,
+    sortBy: "popular",
+    activeFiltersCount: 0,
+  },
 }
 
 export function normalizeSelectedDestination(input: Partial<SelectedDestination>): SelectedDestination | null {

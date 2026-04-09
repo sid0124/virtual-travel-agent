@@ -7,7 +7,9 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Heart, Star, ExternalLink, Calendar, Users, Award, CheckCircle2, Plus, X } from "lucide-react"
 import { buildDestinationImageUrl, destinationFallbackImage } from "@/lib/data"
+import { usePlaceImage } from "@/hooks/use-place-image"
 import { formatCurrency, formatPriceRange } from "@/lib/currency"
+import { isUnavailablePlaceholderImage } from "@/lib/place-images"
 import { cn } from "@/lib/utils"
 
 interface DestinationCardProps {
@@ -70,11 +72,36 @@ export function DestinationCard({
     [name, state, city, country, category, type]
   )
   const primaryImage = image?.trim() ? image : autoImage
-  const [imgSrc, setImgSrc] = useState(primaryImage)
+  const { src: resolvedImage, isLoading: isImageLoading, resolved } = usePlaceImage({
+    id,
+    name,
+    city,
+    state,
+    country,
+    category: category || type,
+    tags: interests,
+    image: primaryImage,
+    imageFallback: fallbackImage,
+  })
+  const imageCandidates = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [resolvedImage, primaryImage, autoImage, fallbackImage]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        )
+      ),
+    [autoImage, fallbackImage, primaryImage, resolvedImage]
+  )
+  const [imgIndex, setImgIndex] = useState(0)
+  const imgSrc = imageCandidates[imgIndex] || fallbackImage
+  const showPreviewFallback = Boolean(resolved?.placeholder || isUnavailablePlaceholderImage(imgSrc))
+  const imageCandidateKey = imageCandidates.join("|")
 
   useEffect(() => {
-    setImgSrc(primaryImage)
-  }, [primaryImage])
+    setImgIndex(0)
+  }, [imageCandidateKey])
 
   return (
     <Card
@@ -85,31 +112,38 @@ export function DestinationCard({
       )}
     >
       <div className="relative aspect-[16/9] overflow-hidden">
+        <div className={cn(
+          "absolute inset-0 bg-[linear-gradient(135deg,#dbeafe_0%,#e0f2fe_42%,#f8fafc_100%)] transition-opacity duration-300",
+          isImageLoading ? "opacity-100" : "opacity-0"
+        )}>
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.75),transparent_34%),linear-gradient(180deg,rgba(15,23,42,0.10),rgba(15,23,42,0.02))]" />
+        </div>
         <img
           src={imgSrc}
           alt={name}
-          className="absolute inset-0 transition-transform duration-500 group-hover:scale-105"
+          className={cn(
+            "absolute inset-0 transition duration-500 group-hover:scale-105",
+            isImageLoading ? "scale-[1.03] opacity-70 blur-[1px]" : "scale-100 opacity-100"
+          )}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
           loading="lazy"
           referrerPolicy="no-referrer"
-          onError={(e) => {
-            if (imgSrc !== autoImage) {
-              setImgSrc(autoImage)
-              return
-            }
-
-            if (imgSrc !== fallbackImage) {
-              setImgSrc(fallbackImage)
-              e.currentTarget.src = fallbackImage
-            }
+          onError={() => {
+            setImgIndex((current) => {
+              const next = current + 1
+              return next < imageCandidates.length ? next : current
+            })
           }}
         />
         <div className={cn(
-          "absolute inset-0 bg-gradient-to-t via-transparent to-transparent",
-          isSelected ? "from-primary/30" : "from-foreground/60"
+          "absolute inset-0 bg-[linear-gradient(180deg,rgba(15,23,42,0.10)_0%,rgba(15,23,42,0.02)_34%,rgba(15,23,42,0.76)_100%)]",
+          isSelected ? "from-primary/30" : ""
         )} />
 
         <div className="absolute left-3 top-3 flex flex-col gap-1.5">
+          <Badge className="bg-white/90 text-slate-900 shadow-sm">
+            AI Pick
+          </Badge>
           {isUNESCO && (
             <Badge className="gap-1 bg-chart-3 text-chart-3-foreground">
               <Award className="h-3 w-3" />
@@ -173,6 +207,17 @@ export function DestinationCard({
               {annualVisitors}M/yr
             </div>
           )}
+        </div>
+
+        <div className="absolute inset-x-3 bottom-14">
+          <div className="flex items-center justify-between gap-2">
+            <p className="line-clamp-1 text-sm text-white/82">{locationParts.join(", ")}</p>
+            {showPreviewFallback ? (
+              <span className="shrink-0 rounded-full border border-white/20 bg-white/14 px-2.5 py-1 text-[11px] font-medium text-white/85 backdrop-blur">
+                Preview unavailable
+              </span>
+            ) : null}
+          </div>
         </div>
       </div>
 

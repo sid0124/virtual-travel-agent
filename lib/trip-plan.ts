@@ -11,6 +11,11 @@ export type TripPlace = {
   latitude?: number
   longitude?: number
   entryFee?: number
+  visitDate?: string
+  visitTime?: string
+  durationMinutes?: number
+  isOptional?: boolean
+  source?: string
 }
 
 export type TripContextLike = {

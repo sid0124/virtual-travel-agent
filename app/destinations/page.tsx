@@ -152,10 +152,22 @@ function matchesDestinationSearch(dest: (typeof destinations)[number], query: st
   )
 }
 
-function buildImageQuery(dest: (typeof destinations)[number]) {
-  return [dest.name, dest.city, dest.state || "", dest.country, dest.category || dest.type]
-    .filter(Boolean)
-    .join(", ")
+function buildImageRequest(dest: (typeof destinations)[number]) {
+  return {
+    key: dest.id,
+    id: dest.id,
+    name: dest.name,
+    city: dest.city,
+    state: dest.state,
+    country: dest.country,
+    category: dest.category || dest.type,
+    tags: dest.tags || dest.interests || [],
+    imageQuery: [dest.name, dest.city, dest.state || "", dest.country, dest.category || dest.type]
+      .filter(Boolean)
+      .join(" "),
+    image: dest.image,
+    imageFallback: destinationFallbackImage,
+  }
 }
 
 type SelectedPlace = {
@@ -767,7 +779,7 @@ export default function DestinationsPage() {
 
     const pendingDestinations = normalizedDestinations.filter((place) => {
       const currentImage = resolvedImages[place.id] || place.image
-      return !currentImage || currentImage.includes("source.unsplash.com")
+      return !currentImage || currentImage.includes("source.unsplash.com") || currentImage.includes("images.unsplash.com") || currentImage.startsWith("data:image/")
     })
 
     if (pendingDestinations.length === 0) return
@@ -777,14 +789,14 @@ export default function DestinationsPage() {
 
     const loadImages = async () => {
       try {
-        const queryById = Object.fromEntries(
-          pendingDestinations.map((place) => [place.id, buildImageQuery(place)])
+        const requestById = Object.fromEntries(
+          pendingDestinations.map((place) => [place.id, buildImageRequest(place)])
         )
         const response = await fetch("/api/images", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            queries: Object.values(queryById),
+            places: Object.values(requestById),
           }),
         })
         const data = await response.json()
@@ -795,7 +807,7 @@ export default function DestinationsPage() {
         setResolvedImages((prev) => {
           const next = { ...prev }
           for (const place of pendingDestinations) {
-            const resolvedImage = imageMap[queryById[place.id]] || prev[place.id] || destinationFallbackImage
+            const resolvedImage = imageMap[place.id] || prev[place.id] || destinationFallbackImage
             next[place.id] = resolvedImage
           }
           return next
@@ -832,6 +844,34 @@ export default function DestinationsPage() {
     (selectedState !== "All States" ? 1 : 0) +
     (selectedType !== "All Types" ? 1 : 0) +
     (unescoOnly ? 1 : 0)
+
+  useEffect(() => {
+    setTripSetup((prev) => ({
+      ...prev,
+      discoveryContext: {
+        searchQuery,
+        budgetRange: [budgetRange[0], budgetRange[1]],
+        selectedInterests,
+        selectedRegion,
+        selectedState,
+        selectedType,
+        unescoOnly,
+        sortBy,
+        activeFiltersCount,
+      },
+    }))
+  }, [
+    activeFiltersCount,
+    budgetRange,
+    searchQuery,
+    selectedInterests,
+    selectedRegion,
+    selectedState,
+    selectedType,
+    setTripSetup,
+    sortBy,
+    unescoOnly,
+  ])
 
   const FilterContent = () => (
     <div className="space-y-6">

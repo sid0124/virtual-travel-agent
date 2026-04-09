@@ -40,8 +40,84 @@ export interface Destination {
   longitude: number
 }
 
-export const destinationFallbackImage =
-  "https://via.placeholder.com/400x300?text=No+Image"
+export const destinationFallbackImage = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="Image unavailable">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f8fafc" />
+        <stop offset="100%" stop-color="#e2e8f0" />
+      </linearGradient>
+    </defs>
+    <rect width="1600" height="900" fill="url(#bg)" />
+    <rect x="140" y="180" width="1320" height="540" rx="40" fill="rgba(255,255,255,0.82)" stroke="rgba(148,163,184,0.28)" stroke-width="8" />
+    <circle cx="800" cy="380" r="92" fill="rgba(148,163,184,0.12)" />
+    <path d="M736 402 790 456 876 330" fill="none" stroke="#64748b" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" />
+    <text x="800" y="558" text-anchor="middle" fill="#0f172a" font-size="56" font-family="Arial, sans-serif" font-weight="700">Preview unavailable</text>
+    <text x="800" y="628" text-anchor="middle" fill="#475569" font-size="30" font-family="Arial, sans-serif">Wanderly place card</text>
+  </svg>
+`)}`
+
+function escapeSvgText(value: string) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+export function buildDestinationPlaceholderImage(input: {
+  name: string
+  state?: string
+  city?: string
+  country?: string
+  category?: string
+}) {
+  const title = escapeSvgText(input.name || "Wanderly pick")
+  const subtitle = escapeSvgText(
+    [input.city || input.state, input.country].filter(Boolean).join(", ") || "Travel recommendation"
+  )
+  const eyebrow = escapeSvgText(input.category || "Curated escape")
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="${title}">
+      <defs>
+        <linearGradient id="sky" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0f3f74" />
+          <stop offset="55%" stop-color="#1479b8" />
+          <stop offset="100%" stop-color="#8fd3ff" />
+        </linearGradient>
+        <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#f4c97a" stop-opacity="0.95" />
+          <stop offset="100%" stop-color="#f4c97a" stop-opacity="0" />
+        </linearGradient>
+        <linearGradient id="land" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#0d325c" />
+          <stop offset="100%" stop-color="#154b7d" />
+        </linearGradient>
+      </defs>
+      <rect width="1600" height="900" fill="url(#sky)" />
+      <circle cx="1260" cy="160" r="230" fill="url(#glow)" />
+      <path d="M0 610C150 520 280 520 410 585C530 645 650 645 810 555C980 460 1110 470 1260 555C1385 625 1490 635 1600 585V900H0Z" fill="rgba(8,27,51,0.28)" />
+      <path d="M0 670C160 560 320 555 470 630C615 700 760 710 930 610C1110 500 1260 515 1405 620C1485 680 1550 710 1600 720V900H0Z" fill="url(#land)" />
+      <path d="M0 760C120 720 280 710 420 740C565 770 710 760 865 710C1025 655 1205 660 1370 725C1460 760 1535 800 1600 840V900H0Z" fill="#0a2540" />
+      <g fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="2">
+        <path d="M170 180C300 150 420 150 550 200C720 265 875 255 1040 200C1185 150 1325 150 1450 190" />
+        <path d="M220 285C390 240 560 255 720 320C875 382 1040 385 1220 325C1325 292 1415 276 1495 282" />
+      </g>
+      <g transform="translate(84 88)">
+        <rect width="248" height="44" rx="22" fill="rgba(255,255,255,0.16)" />
+        <text x="28" y="29" fill="#f8fbff" font-size="22" font-family="Arial, sans-serif" font-weight="700" letter-spacing="3">${eyebrow.toUpperCase()}</text>
+      </g>
+      <g transform="translate(84 600)">
+        <text x="0" y="0" fill="#ffffff" font-size="72" font-family="Arial, sans-serif" font-weight="700">${title}</text>
+        <text x="0" y="58" fill="rgba(255,255,255,0.84)" font-size="30" font-family="Arial, sans-serif">${subtitle}</text>
+        <text x="0" y="120" fill="rgba(255,255,255,0.72)" font-size="26" font-family="Arial, sans-serif">Wanderly AI travel recommendation</text>
+      </g>
+    </svg>
+  `
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`
+}
 
 export function buildDestinationImageUrl(input: {
   name: string
@@ -50,17 +126,7 @@ export function buildDestinationImageUrl(input: {
   country?: string
   category?: string
 }) {
-  const query = [
-    input.name,
-    input.state || "",
-    input.city || "",
-    input.country || "",
-    input.category || "travel",
-  ]
-    .filter(Boolean)
-    .join(",")
-
-  return `https://source.unsplash.com/800x600/?${encodeURIComponent(query)}`
+  return buildDestinationPlaceholderImage(input)
 }
 
 export function ensureDestinationImage<T extends Destination>(destination: T): T {
@@ -168,7 +234,13 @@ function createGlobalDestination(input: {
     region: input.region,
     category: input.category,
     type: input.category,
-    image: `https://source.unsplash.com/800x600/?${encodeURIComponent(`${input.name},${input.city},travel`)}`,
+    image: buildDestinationImageUrl({
+      name: input.name,
+      state: input.state,
+      city: input.city,
+      country: input.country,
+      category: input.category,
+    }),
     imageFallback: destinationFallbackImage,
     description: input.description,
     famousFor: input.description,

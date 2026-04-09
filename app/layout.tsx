@@ -1,10 +1,7 @@
 import React from "react"
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
 
 import './globals.css'
-
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 
 export const metadata: Metadata = {
   title: 'Wanderly - AI Travel Agent',
@@ -24,7 +21,7 @@ export default function RootLayout({
       <head>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/remixicon/3.5.0/remixicon.css" crossOrigin="" />
       </head>
-      <body className={`${inter.variable} font-sans antialiased`}>
+      <body className="font-sans antialiased">
         <Provider>
           {children}
           <Toaster />

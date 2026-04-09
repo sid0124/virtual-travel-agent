@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -23,6 +23,13 @@ import { useSession, signOut } from "next-auth/react"
 
 function AuthButtons() {
   const { data: session } = useSession()
+  const router = useRouter()
+
+  const handleLogout = async () => {
+    await signOut({ redirect: false })
+    router.replace("/login")
+    router.refresh()
+  }
 
   if (session) {
     return (
@@ -37,7 +44,7 @@ function AuthButtons() {
           variant="ghost"
           size="sm"
           className="gap-2"
-          onClick={() => signOut({ callbackUrl: "/login" })}
+          onClick={handleLogout}
         >
           <LogOut className="h-4 w-4" />
           <span className="hidden lg:inline">Logout</span>

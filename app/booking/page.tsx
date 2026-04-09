@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Navigation } from "@/components/navigation"
 import { ChatBubble } from "@/components/chat-bubble"
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import {
   Hotel,
   Plane,
@@ -69,6 +70,7 @@ import { useHotelsSearch } from "@/hooks/use-hotels-search"
 import { useFlights } from "@/hooks/use-flights"
 import { buildTripPlan, makeSegmentKey, normalizeCity, saveTripPlan } from "@/lib/trip-plan"
 
+const BOOKING_HANDOFF_STORAGE_KEY = "WANDERLY_AI_BOOKING_HANDOFF_V1"
 
 type RoutePlace = {
   name: string
@@ -118,6 +120,141 @@ function isValidStoredRoute(stored: unknown, origin: string, destinations: strin
   return target === given
 }
 
+function formatShortDate(value?: string) {
+  if (!value) return "Dates pending"
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return "Dates pending"
+  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+}
+
+function formatDateRangeLabel(start?: string, end?: string) {
+  if (!start || !end) return "Dates pending"
+  const startDate = new Date(start)
+  const endDate = new Date(end)
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return "Dates pending"
+  const sameYear = startDate.getFullYear() === endDate.getFullYear()
+  const startLabel = startDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  })
+  const endLabel = endDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+  return `${startLabel} - ${endLabel}`
+}
+
+function getDurationLabel(start?: string, end?: string) {
+  if (!start || !end) return "Dates pending"
+  const startDate = new Date(start)
+  const endDate = new Date(end)
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return "Dates pending"
+  const days = Math.max(1, differenceInCalendarDays(endDate, startDate))
+  return `${days} day${days === 1 ? "" : "s"}`
+}
+
+function titleCase(value?: string) {
+  if (!value) return "Not set"
+  return value
+    .replace(/[-_]/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
+}
+
+function getBudgetModeLabel(value?: string) {
+  if (!value) return "Flexible budget"
+  if (value === "low" || value === "budget") return "Budget"
+  if (value === "medium" || value === "mid-range") return "Mid-range"
+  if (value === "premium" || value === "luxury") return "Premium"
+  return titleCase(value)
+}
+
+function getTripModeLabel(context: any) {
+  const preferences = Array.isArray(context?.preferences) ? context.preferences.map((value: string) => String(value).toLowerCase()) : []
+  if (preferences.includes("family")) return "Family trip"
+  if (preferences.includes("couple")) return "Couple trip"
+  if (preferences.includes("solo")) return "Solo trip"
+
+  const travelers = Number(context?.travelersCount || context?.travelers || 1)
+  if (travelers <= 1) return "Solo trip"
+  if (travelers === 2) return "Couple trip"
+  if (travelers >= 4) return "Group trip"
+  return `${travelers} travelers`
+}
+
+function getFlightStopsLabel(flight: any) {
+  const stops = typeof flight?.stops === "number" ? flight.stops : 0
+  if (stops <= 0) return "Nonstop"
+  return `${stops} stop${stops === 1 ? "" : "s"}`
+}
+
+function parseDurationMinutesLabel(duration?: string) {
+  if (!duration) return Number.MAX_SAFE_INTEGER
+  const hours = Number(duration.match(/(\d+)h/i)?.[1] || 0)
+  const minutes = Number(duration.match(/(\d+)m/i)?.[1] || 0)
+  return hours * 60 + minutes
+}
+
+function getHotelBadge(hotel: any, index: number) {
+  const amenities = new Set((hotel?.amenities || []).map((item: string) => item.toLowerCase()))
+  const rating = Number(hotel?.rating || 0)
+  if (index === 0) return "Best value"
+  if (rating >= 4.7) return "Top rated"
+  if (amenities.has("pool") || amenities.has("spa")) return "Luxury pick"
+  if (amenities.has("central location")) return "Near city center"
+  return "Recommended stay"
+}
+
+function getHotelInsight(hotel: any, destination: string, budgetMode: string) {
+  const amenities = new Set((hotel?.amenities || []).map((item: string) => item.toLowerCase()))
+  if (amenities.has("pool") || amenities.has("spa")) {
+    return `Great comfort option in ${destination} with amenities that fit a ${budgetMode.toLowerCase()} trip.`
+  }
+  if ((hotel?.rating || 0) >= 4.7) {
+    return `Strong guest reviews make this one of the most trusted stays for ${destination}.`
+  }
+  if ((hotel?.distanceKm || 0) > 0) {
+    return `Convenient for this stop with about ${hotel.distanceKm} km to the main areas you will be visiting.`
+  }
+  return `A balanced stay pick for ${destination} with the right mix of location, comfort, and nightly value.`
+}
+
+function getHotelPolicyTags(hotel: any) {
+  const amenities = new Set((hotel?.amenities || []).map((item: string) => item.toLowerCase()))
+  const tags: string[] = []
+  if (amenities.has("restaurant") || amenities.has("breakfast")) tags.push("Breakfast friendly")
+  if (amenities.has("wifi")) tags.push("Wifi included")
+  if (amenities.has("pool")) tags.push("Pool access")
+  if (amenities.has("gym") || amenities.has("spa")) tags.push("Wellness option")
+  if (tags.length === 0) tags.push("Flexible stay")
+  if (tags.length === 1) tags.push("Easy booking")
+  return tags.slice(0, 2)
+}
+
+function getFlightBadge(flight: any, flights: any[], index: number) {
+  const cheapest = Math.min(...flights.map((item) => Number(item?.price || Number.MAX_SAFE_INTEGER)))
+  const fastest = Math.min(...flights.map((item) => Number(item?.durationMinutes || parseDurationMinutesLabel(item?.duration))))
+  const stops = typeof flight?.stops === "number" ? flight.stops : 0
+  const durationMinutes = Number(flight?.durationMinutes || parseDurationMinutesLabel(flight?.duration))
+
+  if (Number(flight?.price || 0) === cheapest) return "Lowest fare"
+  if (durationMinutes === fastest) return "Fastest"
+  if (stops === 0) return "Fewest stops"
+  if (index === 0) return "Best overall"
+  return "Good timing"
+}
+
+function getFlightInsight(flight: any, origin: string, destination: string, budgetMode: string) {
+  const stopLabel = getFlightStopsLabel(flight)
+  if (stopLabel === "Nonstop") {
+    return `Nonstop timing from ${origin} to ${destination} keeps this segment efficient for your ${budgetMode.toLowerCase()} trip.`
+  }
+  if ((flight?.stops || 0) === 1) {
+    return "A one-stop option that balances price and duration well for this leg."
+  }
+  return `A workable route for ${origin} to ${destination} with a focus on overall fare value.`
+}
+
 // Define payment method type
 type PaymentMethod = "upi" | "card" | "netbanking" | "wallet" | "cash"
 type PaymentSubMethod = "credit-card" | "debit-card" | "google-pay" | "phonepe" | "paytm" | "other-upi"
@@ -127,6 +264,7 @@ type UpiApp = "google-pay" | "phonepe" | "paytm" | "amazon-pay" | "bhim" | "othe
 
 export default function BookingPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [activeTab, setActiveTab] = useState("hotels")
   const [sortBy, setSortBy] = useState("recommended")
   const [filterCity, setFilterCity] = useState("All")
@@ -134,6 +272,7 @@ export default function BookingPage() {
   const [showBookingDialog, setShowBookingDialog] = useState(false)
   const [bookingStep, setBookingStep] = useState<"details" | "payment" | "confirmation">("details")
   const [selectedItem, setSelectedItem] = useState<any>(null)
+  const [aiBookingHandoff, setAiBookingHandoff] = useState<any>(null)
   const [bookingDetails, setBookingDetails] = useState({
     checkIn: "",
     checkOut: "",
@@ -197,6 +336,7 @@ export default function BookingPage() {
     const storedSelectionsStr = localStorage.getItem("WANDERLY_BOOKING_SELECTIONS")
     const storedRouteConfirmedStr = localStorage.getItem("WANDERLY_ROUTE_CONFIRMED")
     const storedTripId = localStorage.getItem("WANDERLY_BOOKING_TRIP_ID")
+    const aiHandoffStr = localStorage.getItem(BOOKING_HANDOFF_STORAGE_KEY)
 
     let ctx = null
     if (contextStr) {
@@ -214,7 +354,7 @@ export default function BookingPage() {
       const isNewTrip = !storedTripId || storedTripId !== currentTripId
       localStorage.setItem("WANDERLY_BOOKING_TRIP_ID", currentTripId)
 
-      if (isNewTrip) {
+      if (isNewTrip && !aiHandoffStr) {
         setSelectedHotelsByCity({})
         setSelectedFlightsBySegment({})
         setSkippedHotelsByCity({})
@@ -240,7 +380,7 @@ export default function BookingPage() {
         localStorage.setItem("WANDERLY_ROUTE_CONFIRMED", "true")
       }
 
-      if (!isNewTrip && storedSelectionsStr) {
+      if ((!isNewTrip || aiHandoffStr) && storedSelectionsStr) {
         const parsedSelections = JSON.parse(storedSelectionsStr)
         if (parsedSelections?.selectedHotelsByCity || parsedSelections?.selectedFlightsBySegment) {
           setSelectedHotelsByCity(parsedSelections.selectedHotelsByCity || {})
@@ -277,6 +417,30 @@ export default function BookingPage() {
 
     if (ratesStr) {
       setRates(JSON.parse(ratesStr).data)
+    }
+  }, [])
+
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab")
+    if (requestedTab === "flights" || requestedTab === "hotels" || requestedTab === "bundles") {
+      setActiveTab(requestedTab)
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    const handoffStr = localStorage.getItem(BOOKING_HANDOFF_STORAGE_KEY)
+    if (!handoffStr) return
+
+    try {
+      const parsed = JSON.parse(handoffStr)
+      setAiBookingHandoff(parsed)
+      if (parsed?.activeTab) setActiveTab(parsed.activeTab)
+      if (parsed?.selectedDestination) setSelectedDestination(parsed.selectedDestination)
+      if (parsed?.flight) {
+        setSelectedItem(parsed.flight)
+      }
+    } catch {
+      setAiBookingHandoff(null)
     }
   }, [])
 
@@ -323,6 +487,12 @@ export default function BookingPage() {
 
   const currentOrigin = orderedRoute[selectedSegmentIndex - 1] || orderedRoute[0] || ""
   const hasSingleDestination = routeDestinations.length <= 1
+
+  useEffect(() => {
+    if (!aiBookingHandoff?.flight || !selectedDestination) return
+    const nextKey = makeSegmentKey(aiBookingHandoff.flight.from || currentOrigin || "", selectedDestination)
+    setSelectedFlightsBySegment((prev) => (prev[nextKey] ? prev : { ...prev, [nextKey]: aiBookingHandoff.flight }))
+  }, [aiBookingHandoff, currentOrigin, selectedDestination])
 
   useEffect(() => {
     if (isTripMode && hasSingleDestination && orderedRoute.length > 1 && !routeConfirmed) {
@@ -612,6 +782,8 @@ export default function BookingPage() {
     to: selectedDestination,
     ...segmentDateMap[selectedDestination],
   }
+  const currentSegmentDateLabel = formatDateRangeLabel(activeSegment.checkIn, activeSegment.checkOut)
+  const currentSegmentDepartureLabel = formatShortDate(activeSegment.departureDate)
 
   useEffect(() => {
     if (!orderedRoute.length) return;
@@ -767,6 +939,61 @@ export default function BookingPage() {
     }
   }, [routeSegments, selectedHotelsByCity, skippedHotelsByCity, selectedFlightsBySegment, skippedFlightsBySegment])
 
+  const bookingProgressPercent = bookingProgress.total > 0 ? Math.round((bookingProgress.completed / bookingProgress.total) * 100) : 0
+  const tripDateLabel = formatDateRangeLabel(tripStartDate, tripEndDate)
+  const tripDurationLabel = getDurationLabel(tripStartDate, tripEndDate)
+  const budgetModeLabel = getBudgetModeLabel(tripContext?.budgetLevel || tripContext?.budgetPreference)
+  const tripModeLabel = getTripModeLabel(tripContext)
+  const routeHeadline = orderedRoute.filter(Boolean).join(" -> ")
+  const activeDestinationName = selectedDestination || tripContext?.selectedPlaces?.[0]?.city || tripContext?.destinations?.[0]?.name || "your trip"
+
+  const segmentCards = useMemo(
+    () =>
+      routeSegments.map((segment, index) => {
+        const hotel = selectedHotelsByCity[segment.destinationKey]
+        const flight = selectedFlightsBySegment[segment.key]
+        const hotelSkipped = Boolean(skippedHotelsByCity[segment.destinationKey])
+        const flightSkipped = Boolean(skippedFlightsBySegment[segment.key])
+        const nights = segmentDateMap[segment.to]?.nights || 1
+        const subtotal =
+          convertCurrency((hotel?.price || hotel?.pricePerNight || 0) * nights, hotel?.currency || "INR", currency) +
+          convertCurrency(flight?.price || 0, flight?.currency || "INR", currency)
+        const completed = Boolean((hotel || hotelSkipped) && (flight || flightSkipped))
+
+        return {
+          id: segment.key,
+          index,
+          from: segment.from,
+          to: segment.to,
+          destinationKey: segment.destinationKey,
+          hotel,
+          flight,
+          hotelSkipped,
+          flightSkipped,
+          nights,
+          subtotal,
+          completed,
+          checkIn: segmentDateMap[segment.to]?.checkIn,
+          checkOut: segmentDateMap[segment.to]?.checkOut,
+        }
+      }),
+    [
+      routeSegments,
+      selectedHotelsByCity,
+      selectedFlightsBySegment,
+      skippedHotelsByCity,
+      skippedFlightsBySegment,
+      segmentDateMap,
+      convertCurrency,
+      currency,
+    ]
+  )
+
+  const currentSegmentSummary = useMemo(
+    () => segmentCards.find((segment) => normalizeCity(segment.to) === normalizeCity(selectedDestination)) || segmentCards[0] || null,
+    [segmentCards, selectedDestination]
+  )
+
   const toggleSegmentSkip = (destination: string, field: "hotel" | "flight") => {
     const cityKey = normalizeCity(destination)
     const segmentKey = makeSegmentKey(currentOrigin || "", destination)
@@ -868,6 +1095,51 @@ export default function BookingPage() {
     if (isTripMode) return liveFlights
     return allFlights
   }, [isTripMode, liveFlights])
+
+  const bundleHotel = currentHotelSelection || filteredHotels[0] || null
+  const bundleFlight = currentFlightSelection || filteredFlights[0] || null
+
+  const aiBookingRecommendation = useMemo(() => {
+    if (!isTripMode) {
+      return {
+        title: "AI booking guidance",
+        body: "Connect a planned trip to unlock segment-aware hotel and flight recommendations.",
+      }
+    }
+
+    if (!routeConfirmed) {
+      return {
+        title: "Confirm the route first",
+        body: "Once your travel order is locked, Wanderly can suggest the best stays and flights for each segment.",
+      }
+    }
+
+    if (!currentHotelSelection && filteredHotels[0]) {
+      return {
+        title: `Start with a stay in ${activeDestinationName}`,
+        body: `${filteredHotels[0].name} is a strong first pick because it balances nightly price, location, and rating for this stop.`,
+      }
+    }
+
+    if (currentHotelSelection && !currentFlightSelection && filteredFlights[0]) {
+      return {
+        title: `Lock the ${currentOrigin || "next"} → ${activeDestinationName} flight`,
+        body: `${filteredFlights[0].airline} looks like the best next move for this segment based on fare and timing.`,
+      }
+    }
+
+    if (currentHotelSelection && currentFlightSelection) {
+      return {
+        title: `${activeDestinationName} is nearly ready`,
+        body: "This segment already has both a stay and a flight selected. You can pay now or continue to the next stop.",
+      }
+    }
+
+    return {
+      title: "Keep building your trip",
+      body: "Select a stay or a flight to keep your booking momentum going segment by segment.",
+    }
+  }, [isTripMode, routeConfirmed, currentHotelSelection, currentFlightSelection, filteredHotels, filteredFlights, activeDestinationName, currentOrigin])
 
   const airlineOptions = useMemo(() => {
     const set = new Set<string>()
@@ -1015,14 +1287,241 @@ export default function BookingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.12),transparent_26%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.10),transparent_24%),linear-gradient(180deg,#f8fbff_0%,#f4f7fb_100%)]">
       <Navigation />
 
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pb-[env(safe-area-inset-bottom)]">
         <ChatBubble inline />
       </div>
 
-      <main className="container mx-auto px-4 py-8">
+      <main className="mx-auto w-full max-w-[1780px] px-4 py-6 sm:px-6 xl:px-8">
+        <section className="mb-6 overflow-hidden rounded-[32px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.96)_0%,rgba(240,249,255,0.98)_100%)] shadow-[0_22px_60px_rgba(148,163,184,0.10)]">
+          <div className="grid gap-6 p-6 lg:p-8 xl:grid-cols-[1.35fr_0.9fr]">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">Wanderly Booking Workspace</p>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">Book your trip</h1>
+              <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600 sm:text-base">
+                Complete your stays and flights with a route-aware booking flow designed for itinerary planning, cost control, and faster decisions.
+              </p>
+
+              <div className="mt-5 rounded-[26px] border border-white/80 bg-white/88 p-5 shadow-[0_14px_35px_rgba(148,163,184,0.08)]">
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">Active journey</p>
+                <p className="mt-3 text-xl font-semibold text-slate-950">
+                  {isTripMode ? routeHeadline || "Confirm a route to begin booking" : "Explore hotels and flights in demo mode"}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Badge variant="outline" className="rounded-full border-sky-200 bg-sky-50/80 px-3 py-1 text-sky-900">
+                    {tripDateLabel}
+                  </Badge>
+                  <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                    {tripDurationLabel}
+                  </Badge>
+                  <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                    {budgetModeLabel}
+                  </Badge>
+                  <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                    {tripModeLabel}
+                  </Badge>
+                  <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                    Focus: {activeDestinationName}
+                  </Badge>
+                </div>
+                {isTripMode && Array.isArray(tripContext?.preferences) && tripContext.preferences.length > 0 ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {tripContext.preferences.slice(0, 4).map((pref: string) => (
+                      <Badge key={pref} variant="secondary" className="rounded-full bg-slate-100 px-3 py-1 capitalize text-slate-700">
+                        {pref}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-[24px] border border-slate-200/80 bg-white/92 p-5 shadow-[0_14px_35px_rgba(148,163,184,0.08)]">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Booking progress</p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{bookingProgressPercent}%</p>
+                <p className="mt-2 text-sm text-slate-600">
+                  {bookingProgress.total > 0
+                    ? `${bookingProgress.completed} of ${bookingProgress.total} route segments ready`
+                    : "Confirm a route to start segment-by-segment booking"}
+                </p>
+                <Progress value={bookingProgressPercent} className="mt-4 h-2.5 bg-slate-100" />
+              </div>
+              <div className="rounded-[24px] border border-slate-200/80 bg-white/92 p-5 shadow-[0_14px_35px_rgba(148,163,184,0.08)]">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Projected total</p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+                  {formatPrice(totalRouteSubtotal || tripContext?.estimatedTotal || 0)}
+                </p>
+                <p className="mt-2 text-sm text-slate-600">Includes selected stay and flight options for your confirmed segments.</p>
+              </div>
+              <div className="rounded-[24px] border border-slate-200/80 bg-white/92 p-5 shadow-[0_14px_35px_rgba(148,163,184,0.08)]">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Current segment</p>
+                <p className="mt-3 text-lg font-semibold text-slate-950">{currentOrigin || "Origin"} - {activeDestinationName}</p>
+                <p className="mt-2 text-sm text-slate-600">
+                  {currentSegmentDateLabel} - Departing {currentSegmentDepartureLabel}
+                </p>
+              </div>
+              <div className="rounded-[24px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(240,249,255,0.9)_0%,rgba(255,255,255,0.95)_100%)] p-5 shadow-[0_14px_35px_rgba(148,163,184,0.08)]">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">AI booking note</p>
+                <p className="mt-3 text-lg font-semibold text-slate-950">{aiBookingRecommendation.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{aiBookingRecommendation.body}</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {aiBookingHandoff?.flight ? (
+          <Card className="mb-6 overflow-hidden rounded-[28px] border border-sky-200/70 bg-[linear-gradient(135deg,rgba(239,246,255,0.96)_0%,rgba(248,250,252,0.98)_100%)] shadow-[0_18px_40px_rgba(14,165,233,0.10)]">
+            <CardContent className="p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">AI booking handoff</p>
+                  <h2 className="mt-2 text-xl font-semibold text-slate-950">
+                    {aiBookingHandoff.flight.airline} {aiBookingHandoff.flight.route?.originCode || aiBookingHandoff.flight.from} - {aiBookingHandoff.flight.route?.destinationCode || aiBookingHandoff.flight.to}
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-600">
+                    {(aiBookingHandoff.flight.departureTime || aiBookingHandoff.flight.departure) || "--:--"} - {(aiBookingHandoff.flight.arrivalTime || aiBookingHandoff.flight.arrival) || "--:--"} / {aiBookingHandoff.flight.duration} / {aiBookingHandoff.flight.stopLabel || getFlightStopsLabel(aiBookingHandoff.flight)}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge variant="secondary" className="rounded-full">{aiBookingHandoff.flight.cabinClass || aiBookingHandoff.flight.class || "Economy"}</Badge>
+                    {aiBookingHandoff.flight.fareType ? <Badge variant="outline" className="rounded-full">{aiBookingHandoff.flight.fareType}</Badge> : null}
+                    {aiBookingHandoff.flight.baggageNote ? <Badge variant="outline" className="rounded-full">{aiBookingHandoff.flight.baggageNote}</Badge> : null}
+                  </div>
+                </div>
+                <div className="flex flex-col items-start gap-3 lg:items-end">
+                  <p className="text-3xl font-bold text-slate-950">{formatPrice(aiBookingHandoff.flight.price, aiBookingHandoff.flight.currency || "INR")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button className="gap-2 rounded-full bg-slate-950 hover:bg-slate-800" onClick={() => { setSelectedItem(aiBookingHandoff.flight); setActiveTab("flights"); setBookingStep("details"); setShowBookingDialog(true) }}>
+                      Book this ticket
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" className="rounded-full bg-white" onClick={() => setActiveTab("flights")}>
+                      Review flight
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        <div className="mb-6 grid gap-4 xl:grid-cols-[1.35fr_0.8fr]">
+          <Card className="rounded-[28px] border border-slate-200/80 bg-white/90 shadow-[0_16px_40px_rgba(148,163,184,0.08)]">
+            <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{isTripMode ? "Active trip summary" : "Demo inventory"}</p>
+                <p className="mt-2 text-lg font-semibold text-slate-950">
+                  {isTripMode ? `${routeDestinations.length} destination stop${routeDestinations.length === 1 ? "" : "s"} across your planned route` : `${allHotels.length} hotels and ${allFlights.length} flights available to explore`}
+                </p>
+                <p className="mt-2 text-sm text-slate-600">
+                  {isTripMode
+                    ? "Hotels and flights are filtered to the route segment you are actively booking."
+                    : "Use this page as a demo booking surface, or connect a full trip for a route-aware experience."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                  {isTripMode ? "Segment-aware booking" : "Demo mode"}
+                </Badge>
+                <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                  {isRatesLoading ? "Refreshing currency" : `Currency: ${currency}`}
+                </Badge>
+                {isTripMode ? (
+                  <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                    Focus: {activeDestinationName}
+                  </Badge>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-[28px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(248,250,252,0.95)_0%,rgba(239,246,255,0.95)_100%)] shadow-[0_16px_40px_rgba(148,163,184,0.08)]">
+            <CardContent className="flex h-full flex-col justify-between gap-4 p-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">AI optimizer</p>
+                <p className="mt-2 text-lg font-semibold text-slate-950">{aiBookingRecommendation.title}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{aiBookingRecommendation.body}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" className="rounded-full bg-white" asChild>
+                  <Link href="/ai-assistant">Ask AI to optimize</Link>
+                </Button>
+                <Button variant="outline" className="rounded-full bg-white" onClick={handleShowItinerary} disabled={!isTripMode}>
+                  View itinerary
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {isTripMode && orderedRoute.length > 1 && (
+          <div className="mb-6">
+            <TravelOrderBuilder
+              route={orderedRoute}
+              isConfirmed={routeConfirmed}
+              onMove={moveRouteItem}
+              onConfirm={handleConfirmRoute}
+            />
+          </div>
+        )}
+
+        {isTripMode && routeConfirmed && routeDestinations.length > 0 && (
+          <section className="mb-8 rounded-[30px] border border-slate-200/80 bg-white/92 p-5 shadow-[0_18px_45px_rgba(148,163,184,0.08)]">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Journey flow</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Route builder and segment navigation</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Review the travel order, switch to the current stop, and move through your booking one segment at a time.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline" className="rounded-full border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">
+                  {routeConfirmed ? "Route confirmed" : "Route draft"}
+                </Badge>
+                <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                  Active stop: {activeDestinationName}
+                </Badge>
+              </div>
+            </div>
+
+            {!hasSingleDestination && (
+              <div className="mt-5">
+                <TravelFlowMap
+                  route={orderedRoute}
+                  activeDestination={selectedDestination}
+                  segments={flowSegments}
+                />
+              </div>
+            )}
+
+            <DestinationSelector
+              destinations={routeDestinations}
+              selectedDestination={selectedDestination}
+              onChange={setSelectedDestination}
+              currentOrigin={currentOrigin}
+              disabled={hasSingleDestination}
+              helperText={selectedPlacesChipText ? `Based on your selected places: ${selectedPlacesChipText}` : undefined}
+            />
+          </section>
+        )}
+
+        {isTripMode && routeDestinations.length === 0 && (
+          <Card className="mb-8 rounded-[28px] border-dashed border-slate-300 bg-white/88 shadow-[0_14px_35px_rgba(148,163,184,0.06)]">
+            <CardContent className="p-8 text-center">
+              <p className="text-lg font-semibold text-slate-950">No selected places found yet</p>
+              <p className="mt-2 text-sm text-slate-600">Go back to the AI Assistant, pick your destinations, then return here to complete flights and stays.</p>
+              <Link href="/ai-assistant">
+                <Button className="mt-4 rounded-full bg-slate-950 hover:bg-slate-800">Go to AI Assistant</Button>
+              </Link>
+            </CardContent>
+          </Card>
+        )}
+
+        {false && (
+        <>
         <div className="mb-8">
           <h1 className="mb-2 text-3xl font-bold text-foreground">Book Your Stay & Flights</h1>
           <p className="flex items-center gap-2 text-muted-foreground">
@@ -1049,6 +1548,45 @@ export default function BookingPage() {
             </div>
           )}
         </div>
+
+        {aiBookingHandoff?.flight ? (
+          <Card className="mb-6 overflow-hidden border-sky-200 bg-[linear-gradient(135deg,rgba(239,246,255,0.96)_0%,rgba(248,250,252,0.98)_100%)] shadow-[0_18px_40px_rgba(14,165,233,0.10)]">
+            <CardContent className="p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">AI booking handoff</p>
+                  <h2 className="mt-2 text-xl font-semibold text-foreground">
+                    {aiBookingHandoff.flight.airline} {aiBookingHandoff.flight.route?.originCode || aiBookingHandoff.flight.from} {"->"} {aiBookingHandoff.flight.route?.destinationCode || aiBookingHandoff.flight.to}
+                  </h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {aiBookingHandoff.flight.departureTime || aiBookingHandoff.flight.departure} - {aiBookingHandoff.flight.arrivalTime || aiBookingHandoff.flight.arrival}
+                    {" • "}
+                    {aiBookingHandoff.flight.duration}
+                    {" • "}
+                    {aiBookingHandoff.flight.stopLabel || `${aiBookingHandoff.flight.stops || 0} stop${(aiBookingHandoff.flight.stops || 0) === 1 ? "" : "s"}`}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge variant="secondary">{aiBookingHandoff.flight.cabinClass || aiBookingHandoff.flight.class || "Economy"}</Badge>
+                    {aiBookingHandoff.flight.fareType ? <Badge variant="outline">{aiBookingHandoff.flight.fareType}</Badge> : null}
+                    {aiBookingHandoff.flight.baggageNote ? <Badge variant="outline">{aiBookingHandoff.flight.baggageNote}</Badge> : null}
+                  </div>
+                </div>
+                <div className="flex flex-col items-start gap-3 lg:items-end">
+                  <p className="text-3xl font-bold text-foreground">{formatPrice(aiBookingHandoff.flight.price, aiBookingHandoff.flight.currency || "INR")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button className="gap-2" onClick={() => { setSelectedItem(aiBookingHandoff.flight); setActiveTab("flights"); setBookingStep("details"); setShowBookingDialog(true) }}>
+                      Complete booking
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" onClick={() => setActiveTab("flights")}>
+                      Review flight
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card className="mb-8 border-chart-4/30 bg-chart-4/5">
           <CardContent className="flex items-start gap-3 p-4">
@@ -1104,7 +1642,423 @@ export default function BookingPage() {
             </CardContent>
           </Card>
         )}
+        </>
+        )}
 
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_380px]">
+          <div className="space-y-6">
+            {isTripMode && routeConfirmed && segmentCards.length > 0 ? (
+              <Card className="rounded-[30px] border border-slate-200/80 bg-white/92 shadow-[0_18px_45px_rgba(148,163,184,0.08)]">
+                <CardHeader className="pb-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Destination booking progress</p>
+                      <CardTitle className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Continue booking stop by stop</CardTitle>
+                      <p className="mt-2 text-sm leading-6 text-slate-600">Each segment tracks its own stay, flight, subtotal, and completion state.</p>
+                    </div>
+                    <Badge variant="outline" className="rounded-full border-sky-200 bg-sky-50 px-3 py-1 text-sky-900">
+                      {bookingProgress.completed}/{bookingProgress.total} ready
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {segmentCards.map((segment) => {
+                      const isActive = normalizeCity(segment.to) === normalizeCity(selectedDestination)
+                      return (
+                        <button
+                          key={segment.id}
+                          type="button"
+                          onClick={() => setSelectedDestination(segment.to)}
+                          className={cn(
+                            "rounded-[24px] border p-4 text-left transition",
+                            isActive ? "border-sky-300 bg-sky-50/80 shadow-[0_14px_35px_rgba(14,165,233,0.10)]" : "border-slate-200/80 bg-slate-50/60 hover:border-sky-200 hover:bg-white"
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Segment {segment.index + 1}</p>
+                              <h3 className="mt-2 text-lg font-semibold text-slate-950">{segment.to}</h3>
+                              <p className="mt-1 text-sm text-slate-500">{segment.from} {"→"} {segment.to}</p>
+                            </div>
+                            <Badge variant="outline" className={cn("rounded-full", segment.completed ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
+                              {segment.completed ? "Booked" : "Pending"}
+                            </Badge>
+                          </div>
+                          <div className="mt-4 space-y-1 text-sm text-slate-600">
+                            <p>{formatDateRangeLabel(segment.checkIn, segment.checkOut)}</p>
+                            <p>Hotel: {segment.hotel ? segment.hotel.name : segment.hotelSkipped ? "Skipped" : "Not selected"}</p>
+                            <p>Flight: {segment.flight ? `${segment.flight.from} -> ${segment.flight.to}` : segment.flightSkipped ? "Skipped" : "Not selected"}</p>
+                          </div>
+                          <div className="mt-4 flex items-center justify-between">
+                            <span className="text-sm font-medium text-slate-500">{segment.nights} night{segment.nights === 1 ? "" : "s"}</span>
+                            <span className="text-base font-semibold text-slate-950">{formatPrice(segment.subtotal)}</span>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {isTripMode && !routeConfirmed ? (
+              <Card className="rounded-[30px] border border-dashed border-sky-200 bg-white/90 shadow-[0_18px_45px_rgba(148,163,184,0.06)]">
+                <CardContent className="flex min-h-[260px] flex-col items-center justify-center gap-4 p-8 text-center">
+                  <MapPin className="h-10 w-10 text-sky-600" />
+                  <div>
+                    <p className="text-xl font-semibold text-slate-950">Confirm your route to unlock booking options</p>
+                    <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">Once your travel order is locked, Wanderly will surface stay and flight options for the active segment.</p>
+                  </div>
+                  <Button className="rounded-full bg-slate-950 hover:bg-slate-800" onClick={handleConfirmRoute}>
+                    Confirm route and continue
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <Card className="rounded-[30px] border border-slate-200/80 bg-white/94 shadow-[0_18px_45px_rgba(148,163,184,0.08)]">
+                  <CardHeader className="pb-5">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Booking workspace</p>
+                        <CardTitle className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                          {isTripMode ? `Hotels and flights for ${activeDestinationName}` : "Compare stays and flights"}
+                        </CardTitle>
+                        <p className="mt-2 text-sm leading-6 text-slate-600">
+                          {isTripMode ? `${currentOrigin || "Origin"} -> ${activeDestinationName} / ${currentSegmentDateLabel}` : "Connect a trip for segment-aware booking, or browse demo inventory below."}
+                        </p>
+                      </div>
+
+                      <TabsList className="grid w-full max-w-[420px] grid-cols-3 rounded-full bg-slate-100 p-1">
+                        <TabsTrigger value="bundles" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">Bundle view</TabsTrigger>
+                        <TabsTrigger value="hotels" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">Hotels</TabsTrigger>
+                        <TabsTrigger value="flights" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">Flights</TabsTrigger>
+                      </TabsList>
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[24px] border border-slate-200/80 bg-slate-50/80 p-4">
+                      {(activeTab === "hotels" || activeTab === "bundles") ? (
+                        <>
+                          {!isTripMode ? (
+                            <Select value={filterCity} onValueChange={setFilterCity}>
+                              <SelectTrigger className="w-[170px] rounded-full border-slate-200 bg-white">
+                                <SelectValue placeholder="Filter city" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {hotelCities.map((city) => (
+                                  <SelectItem key={city} value={city}>{city === "All" ? "All Cities" : city}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : null}
+                          <Select value={sortBy} onValueChange={setSortBy}>
+                            <SelectTrigger className="w-[180px] rounded-full border-slate-200 bg-white">
+                              <SelectValue placeholder="Sort hotels" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="recommended">Recommended</SelectItem>
+                              <SelectItem value="price-low">Price low to high</SelectItem>
+                              <SelectItem value="rating">Top rated</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </>
+                      ) : null}
+
+                      {activeTab === "flights" ? (
+                        <>
+                          <Select value={flightSort} onValueChange={(v: "best" | "cheapest" | "fastest") => setFlightSort(v)}>
+                            <SelectTrigger className="w-[140px] rounded-full border-slate-200 bg-white">
+                              <SelectValue placeholder="Sort flights" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="best">Best</SelectItem>
+                              <SelectItem value="cheapest">Cheapest</SelectItem>
+                              <SelectItem value="fastest">Fastest</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select value={flightStops} onValueChange={(v: "all" | "0" | "1" | "2+") => setFlightStops(v)}>
+                            <SelectTrigger className="w-[130px] rounded-full border-slate-200 bg-white">
+                              <SelectValue placeholder="Stops" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">All stops</SelectItem>
+                              <SelectItem value="0">Nonstop</SelectItem>
+                              <SelectItem value="1">1 stop</SelectItem>
+                              <SelectItem value="2+">2+ stops</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </>
+                      ) : null}
+
+                      <Badge variant="outline" className="rounded-full border-slate-200 bg-white px-3 py-1 text-slate-700">
+                        {activeTab === "flights" ? `${filteredFlights.length} flight option${filteredFlights.length === 1 ? "" : "s"}` : `${filteredHotels.length} hotel option${filteredHotels.length === 1 ? "" : "s"}`}
+                      </Badge>
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="pt-0">
+                    <TabsContent value="bundles" className="mt-0 space-y-4">
+                      <div className="grid gap-4 xl:grid-cols-2">
+                        <Card className="rounded-[24px] border border-slate-200/80 bg-slate-50/70 shadow-none">
+                          <CardContent className="p-5">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Stay recommendation</p>
+                            <h3 className="mt-2 text-xl font-semibold text-slate-950">{bundleHotel?.name || `Select a stay in ${activeDestinationName}`}</h3>
+                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                              {bundleHotel ? getHotelInsight(bundleHotel, activeDestinationName, budgetModeLabel) : `No hotel selected yet for ${activeDestinationName}.`}
+                            </p>
+                            <div className="mt-5 flex items-center justify-between">
+                              <p className="text-2xl font-semibold text-slate-950">
+                                {bundleHotel ? formatPrice(bundleHotel.pricePerNight || bundleHotel.price || 0, bundleHotel.currency || "USD") : "-"}
+                              </p>
+                              <Button className="rounded-full" variant={bundleHotel && currentHotelSelection?.id === bundleHotel.id ? "default" : "outline"} onClick={() => bundleHotel ? selectHotelForDestination({ ...bundleHotel, price: bundleHotel.pricePerNight || bundleHotel.price || 0 }) : setActiveTab("hotels")}>
+                                {bundleHotel && currentHotelSelection?.id === bundleHotel.id ? "Selected stay" : "Choose stay"}
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        <Card className="rounded-[24px] border border-slate-200/80 bg-slate-50/70 shadow-none">
+                          <CardContent className="p-5">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Flight recommendation</p>
+                            <h3 className="mt-2 text-xl font-semibold text-slate-950">{bundleFlight?.airline || `Select a flight for ${currentOrigin || "this route"}`}</h3>
+                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                              {bundleFlight ? getFlightInsight(bundleFlight, currentOrigin || "Origin", activeDestinationName, budgetModeLabel) : "No flight selected yet for this segment."}
+                            </p>
+                            <div className="mt-5 flex items-center justify-between">
+                              <p className="text-2xl font-semibold text-slate-950">
+                                {bundleFlight ? formatPrice(bundleFlight.price, bundleFlight.currency || "INR") : "-"}
+                              </p>
+                              <Button className="rounded-full" variant={bundleFlight && currentFlightSelection?.id === bundleFlight.id ? "default" : "outline"} onClick={() => bundleFlight ? selectFlightForDestination(bundleFlight) : setActiveTab("flights")}>
+                                {bundleFlight && currentFlightSelection?.id === bundleFlight.id ? "Selected flight" : "Choose flight"}
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="hotels" className="mt-0">
+                      {filteredHotels.length === 0 ? (
+                        <div className="flex min-h-[260px] flex-col items-center justify-center rounded-[26px] border border-dashed border-slate-300 bg-slate-50/70 p-8 text-center">
+                          <Hotel className="mb-3 h-10 w-10 text-slate-400" />
+                          <p className="text-lg font-semibold text-slate-950">No hotel matches yet</p>
+                          <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">Relax your filters or try a wider search to surface more stays.</p>
+                        </div>
+                      ) : (
+                        <div className="grid gap-4 xl:grid-cols-2">
+                          {filteredHotels.slice(0, 6).map((hotel, index) => {
+                            const imageSrc = String(hotel.imageUrl || hotel.image || "").trim() || "/placeholder.svg"
+                            const isSelectedHotel = currentHotelSelection?.id === hotel.id
+                            const nightlyPrice = hotel.pricePerNight || hotel.price || 0
+                            return (
+                              <Card key={hotel.id} className={cn("overflow-hidden rounded-[28px] border transition hover:-translate-y-0.5 hover:shadow-[0_20px_45px_rgba(148,163,184,0.14)]", isSelectedHotel ? "border-sky-300 shadow-[0_16px_35px_rgba(14,165,233,0.12)]" : "border-slate-200/80 shadow-[0_14px_30px_rgba(148,163,184,0.08)]")}>
+                                <div className="relative h-48 overflow-hidden bg-slate-100">
+                                  <img src={imageSrc} alt={hotel.name} className="h-full w-full object-cover" loading="lazy" onError={(e) => { const img = e.currentTarget; if (!img.src.endsWith('/placeholder.svg')) img.src = '/placeholder.svg' }} />
+                                  <div className="absolute inset-x-4 top-4 flex items-center justify-between">
+                                    <Badge className="rounded-full bg-white/92 text-slate-900">{getHotelBadge(hotel, index)}</Badge>
+                                    <button onClick={() => toggleFavorite(hotel.id)} className="flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-slate-700">
+                                      <Heart className={cn("h-4.5 w-4.5", favorites.includes(hotel.id) ? "fill-rose-500 text-rose-500" : "text-slate-700")} />
+                                    </button>
+                                  </div>
+                                </div>
+                                <CardContent className="space-y-4 p-5">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <h3 className="text-xl font-semibold text-slate-950">{hotel.name}</h3>
+                                      <p className="mt-1 text-sm text-slate-500">{hotel.city}{hotel.country ? `, ${hotel.country}` : ""}</p>
+                                      <p className="mt-3 text-sm leading-6 text-slate-600">{getHotelInsight(hotel, activeDestinationName, budgetModeLabel)}</p>
+                                    </div>
+                                    <div className="rounded-2xl bg-amber-50 px-3 py-2 text-right">
+                                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">Rating</p>
+                                      <p className="mt-1 flex items-center justify-end gap-1 text-base font-semibold text-slate-950"><Star className="h-4 w-4 fill-amber-400 text-amber-400" />{hotel.rating ?? "N/A"}</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {(hotel.amenities || []).slice(0, 4).map((amenity: string) => <Badge key={amenity} variant="secondary" className="rounded-full bg-slate-100 text-slate-700 capitalize">{amenity}</Badge>)}
+                                  </div>
+                                  <div className="flex items-end justify-between border-t border-slate-200 pt-4">
+                                    <p className="text-2xl font-semibold text-slate-950">{formatPrice(nightlyPrice, hotel.currency || "USD")}</p>
+                                    <div className="flex gap-2">
+                                      <Button variant="outline" className="rounded-full bg-white" onClick={() => handleBookNow({ ...hotel, price: nightlyPrice })}>Details</Button>
+                                      <Button variant={isSelectedHotel ? "default" : "outline"} className="rounded-full" onClick={() => selectHotelForDestination({ ...hotel, price: nightlyPrice })}>
+                                        {isSelectedHotel ? "Selected" : "Select"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </TabsContent>
+
+                    <TabsContent value="flights" className="mt-0">
+                      {filteredFlights.length === 0 ? (
+                        <div className="flex min-h-[260px] flex-col items-center justify-center rounded-[26px] border border-dashed border-slate-300 bg-slate-50/70 p-8 text-center">
+                          <Plane className="mb-3 h-10 w-10 text-slate-400" />
+                          <p className="text-lg font-semibold text-slate-950">No flights available for this segment</p>
+                          <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">Try another route segment or adjust your flight filters.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {filteredFlights.slice(0, 6).map((flight, index) => {
+                            const isSelectedFlight = currentFlightSelection?.id === flight.id
+                            return (
+                              <Card key={flight.id} className={cn("rounded-[28px] border transition hover:-translate-y-0.5 hover:shadow-[0_20px_45px_rgba(148,163,184,0.14)]", isSelectedFlight ? "border-sky-300 shadow-[0_16px_35px_rgba(14,165,233,0.12)]" : "border-slate-200/80 shadow-[0_14px_30px_rgba(148,163,184,0.08)]")}>
+                                <CardContent className="p-5">
+                                  <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+                                    <div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <p className="text-lg font-semibold text-slate-950">{flight.airline}</p>
+                                        <Badge variant="outline" className="rounded-full border-sky-200 bg-sky-50 text-sky-900">{getFlightBadge(flight, filteredFlights, index)}</Badge>
+                                        <Badge variant="secondary" className="rounded-full">{flight.class || "Economy"}</Badge>
+                                      </div>
+                                      <p className="mt-3 text-sm leading-6 text-slate-600">{getFlightInsight(flight, currentOrigin || "Origin", activeDestinationName, budgetModeLabel)}</p>
+                                    </div>
+                                    <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+                                      <div className="text-left sm:text-right">
+                                        <p className="text-3xl font-semibold tracking-tight text-slate-950">{flight.departure}</p>
+                                        <p className="mt-1 text-sm text-slate-500">{flight.from}</p>
+                                      </div>
+                                      <div className="flex min-w-[150px] flex-col items-center px-3 text-center">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{flight.duration}</p>
+                                        <div className="mt-2 flex w-full items-center gap-2"><div className="h-px flex-1 bg-slate-300" /><Plane className="h-4 w-4 text-sky-600" /><div className="h-px flex-1 bg-slate-300" /></div>
+                                        <p className="mt-2 text-xs text-slate-500">{getFlightStopsLabel(flight)}</p>
+                                      </div>
+                                      <div className="text-left">
+                                        <p className="text-3xl font-semibold tracking-tight text-slate-950">{flight.arrival}</p>
+                                        <p className="mt-1 text-sm text-slate-500">{flight.to}</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="mt-5 flex items-end justify-between border-t border-slate-200 pt-4">
+                                    <p className="text-2xl font-semibold text-slate-950">{formatPrice(flight.price, flight.currency || "INR")}</p>
+                                    <div className="flex gap-2">
+                                      <Button variant="outline" className="rounded-full bg-white" onClick={() => handleBookNow(flight)}>Details</Button>
+                                      <Button variant={isSelectedFlight ? "default" : "outline"} className="rounded-full" onClick={() => selectFlightForDestination(flight)}>
+                                        {isSelectedFlight ? "Selected" : "Select"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </TabsContent>
+                  </CardContent>
+                </Card>
+              </Tabs>
+            )}
+          </div>
+
+          <div className="space-y-6 xl:sticky xl:top-24 xl:self-start">
+            <Card className="rounded-[30px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.96)_0%,rgba(239,246,255,0.92)_100%)] shadow-[0_18px_45px_rgba(148,163,184,0.10)]">
+              <CardHeader className="pb-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Trip summary</p>
+                    <CardTitle className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Booking summary</CardTitle>
+                  </div>
+                  <Badge variant="outline" className="rounded-full border-sky-200 bg-white px-3 py-1 text-sky-900">{bookingProgressPercent}% complete</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="rounded-[22px] border border-white/80 bg-white/90 p-4">
+                  <p className="text-sm font-medium text-slate-500">Current destination</p>
+                  <p className="mt-2 text-lg font-semibold text-slate-950">{activeDestinationName}</p>
+                  <div className="mt-3 grid gap-2 text-sm text-slate-600">
+                    <p>Dates: {currentSegmentDateLabel}</p>
+                    <p>Budget: {budgetModeLabel}</p>
+                    <p>Trip mode: {tripModeLabel}</p>
+                  </div>
+                </div>
+                {currentSegmentSummary ? (
+                  <div className="rounded-[22px] border border-slate-200/80 bg-white/90 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-500">Active segment</p>
+                        <p className="mt-2 text-lg font-semibold text-slate-950">
+                          {currentSegmentSummary.from} → {currentSegmentSummary.to}
+                        </p>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "rounded-full",
+                          currentSegmentSummary.completed ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"
+                        )}
+                      >
+                        {currentSegmentSummary.completed ? "Ready" : "Pending"}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Badge variant="outline" className="rounded-full border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">
+                        {currentSegmentSummary.nights} night{currentSegmentSummary.nights === 1 ? "" : "s"}
+                      </Badge>
+                      <Badge variant="outline" className="rounded-full border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">
+                        {currentSegmentSummary.hotel || currentSegmentSummary.hotelSkipped ? "Stay handled" : "Stay pending"}
+                      </Badge>
+                      <Badge variant="outline" className="rounded-full border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">
+                        {currentSegmentSummary.flight || currentSegmentSummary.flightSkipped ? "Flight handled" : "Flight pending"}
+                      </Badge>
+                    </div>
+                  </div>
+                ) : null}
+                <Progress value={bookingProgressPercent} className="h-2.5 bg-slate-100" />
+                <div className="rounded-[22px] border border-slate-200/80 bg-white/90 p-4">
+                  <p className="text-sm font-medium text-slate-500">Selected hotel</p>
+                  <p className="mt-2 font-semibold text-slate-950">{currentHotelSelection?.name || (currentHotelSkipped ? "Skipped for this stop" : "Not selected yet")}</p>
+                </div>
+                <div className="rounded-[22px] border border-slate-200/80 bg-white/90 p-4">
+                  <p className="text-sm font-medium text-slate-500">Selected flight</p>
+                  <p className="mt-2 font-semibold text-slate-950">{currentFlightSelection ? `${currentFlightSelection.from} -> ${currentFlightSelection.to}` : currentFlightSkipped ? "Skipped for this leg" : "Not selected yet"}</p>
+                </div>
+                <div className="rounded-[22px] border border-slate-200/80 bg-white/90 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-slate-500">Segment subtotal</span>
+                    <span className="text-lg font-semibold text-slate-950">{formatPrice(currentSegmentSubtotal)}</span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <span className="text-sm font-medium text-slate-500">Trip total</span>
+                    <span className="text-2xl font-semibold text-slate-950">{formatPrice(totalRouteSubtotal || tripContext?.estimatedTotal || 0)}</span>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Button className="rounded-full bg-slate-950 hover:bg-slate-800" onClick={handlePayCurrentSegment} disabled={!hasCurrentSegmentSelection || currentSegmentSubtotal <= 0}>Proceed to payment</Button>
+                  <Button variant="outline" className="rounded-full bg-white" onClick={handleContinueBooking} disabled={bookingProgress.allCompleted}>Continue booking</Button>
+                  <Button variant="outline" className="rounded-full bg-white" onClick={() => setActiveTab("bundles")}>View selected options</Button>
+                  <Button variant="outline" className="rounded-full bg-white" onClick={handleShowItinerary} disabled={!bookingProgress.allCompleted}>Show itinerary</Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-[28px] border border-slate-200/80 bg-white/92 shadow-[0_16px_40px_rgba(148,163,184,0.08)]">
+              <CardHeader className="pb-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Need help?</p>
+                <CardTitle className="text-xl font-semibold text-slate-950">AI booking assistant</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm leading-6 text-slate-600">Ask Wanderly for cheaper options, better route timing, family-friendly stays, or a smarter booking sequence.</p>
+                <div className="rounded-[22px] border border-sky-100 bg-sky-50/70 p-4">
+                  <p className="text-sm font-semibold text-slate-950">{aiBookingRecommendation.title}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{aiBookingRecommendation.body}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" className="rounded-full bg-white" asChild>
+                    <Link href="/ai-assistant">Open AI assistant</Link>
+                  </Button>
+                  <Button variant="outline" className="rounded-full bg-white" onClick={() => setActiveTab("bundles")}>View bundle</Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        {false && (
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-4">
           {/* Main Content */}
           <div className="lg:col-span-3">
@@ -1678,6 +2632,7 @@ export default function BookingPage() {
             </div>
           </div>
         </div>
+        )}
       </main>
 
       <Dialog open={showBookingDialog} onOpenChange={setShowBookingDialog}>
@@ -2328,28 +3283,6 @@ export default function BookingPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <Card className="mt-8 border-primary/20 bg-primary/5">
-        <CardContent className="flex flex-col items-center gap-4 p-8 text-center md:flex-row md:text-left">
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
-            <Hotel className="h-8 w-8 text-primary" />
-          </div>
-          <div className="flex-1">
-            <h3 className="mb-2 text-lg font-semibold text-foreground">
-              Need Help Finding the Perfect Stay?
-            </h3>
-            <p className="text-muted-foreground">
-              Our AI uses hotel data matched to destinations from the World Famous Places dataset to find the best fit.
-            </p>
-          </div>
-          <Link href="/chat">
-            <Button className="gap-2">
-              Ask AI Assistant
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
     </div>
   )
 }

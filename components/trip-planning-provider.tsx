@@ -41,6 +41,10 @@ export function TripPlanningProvider({ children }: { children: React.ReactNode }
         setTripSetupState({
           ...defaultTripSetupState,
           ...parsed,
+          discoveryContext: {
+            ...defaultTripSetupState.discoveryContext,
+            ...(parsed as Partial<TripSetupState>)?.discoveryContext,
+          },
           selectedDestinations: dedupeSelectedDestinations(
             Array.isArray(parsed.selectedDestinations)
               ? parsed.selectedDestinations
